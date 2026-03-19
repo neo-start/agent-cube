@@ -2,6 +2,22 @@ import { state, broadcast, broadcastGroup, pushGroupMsg } from './state.js';
 import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, loadLongTermMemory } from './memory.js';
 import { streamChat } from './claude-proxy.js';
 
+// Messaging protocol injected into every group-task system prompt
+const GROUP_MESSAGING_PROTOCOL = `
+## Group Chat Messaging Protocol
+You are in a group chat. To send a message to another agent or to the user, use this format on its own line:
+[MSG:Claw] message content here
+[MSG:Deep] message content here
+[MSG:User] message content here
+
+Rules:
+- Use [MSG:X] when you need to actively send something to a specific recipient
+- [MSG:Claw] or [MSG:Deep] will deliver the message AND trigger that agent to respond
+- [MSG:User] will post the message visibly to the user in group chat
+- You can include multiple [MSG:X] blocks in one response
+- Do NOT use [DELEGATE:X] and [MSG:X] for the same subtask — pick one
+`;
+
 // Fallback personas if soul files don't exist
 const DEFAULT_PERSONAS = {
   Claw: `You are Claw, a senior software engineer and coding specialist. You write clean, working code. You think step by step. You always verify your reasoning before coding. If you receive a task that is purely analytical or strategic (no coding needed), start your response with exactly [DELEGATE:Deep] on the first line, then explain what analysis you need from Deep. Otherwise, just solve the task directly.`,
@@ -50,6 +66,47 @@ export function checkDelegation(response, fromAgent, taskId, originalDesc) {
   return true;
 }
 
+// Scan response for [MSG:Target] blocks, route each through group chat.
+// Returns true if any MSG blocks were found and processed.
+export function checkGroupMessages(response, fromAgent, taskId) {
+  const pattern = /\[MSG:(Claw|Deep|User)\]([\s\S]*?)(?=\[MSG:|$)/g;
+  let found = false;
+  let match;
+
+  while ((match = pattern.exec(response)) !== null) {
+    const toTarget = match[1];
+    const msgContent = match[2].trim();
+    if (!msgContent) continue;
+    found = true;
+
+    // Post in group chat as a message from this agent to the target
+    pushGroupMsg('agent-msg', fromAgent, msgContent, { toTarget, taskId });
+
+    // If target is another agent, trigger it with a new task
+    if (toTarget === 'Claw' || toTarget === 'Deep') {
+      const subTaskId = `task-${++state.taskCounter}-${Date.now()}`;
+      const parentTask = state.tasks[taskId];
+      state.tasks[subTaskId] = {
+        id: subTaskId,
+        agent: toTarget,
+        description: msgContent,
+        by: fromAgent,
+        status: 'working',
+        latestLog: null,
+        result: null,
+        delegatedBy: fromAgent,
+        parentTaskId: taskId,
+        source: 'group',
+        attachments: parentTask?.attachments || [],
+        createdAt: new Date().toISOString(),
+      };
+      if (toTarget === 'Claw') runClaw(subTaskId, msgContent);
+      else runDeep(subTaskId, msgContent);
+    }
+  }
+  return found;
+}
+
 export async function runClaw(taskId, description) {
   const agent = state.agents.Claw;
   agent.status = 'working';
@@ -77,12 +134,13 @@ export async function runClaw(taskId, description) {
     ? 'SHARED CONTEXT:\n' + pad.entries.map(e => `${e.key}: ${e.value}`).join('\n') + '\n\n'
     : '';
 
-  // Build system prompt: soul + long-term memory + shared context
+  // Build system prompt: soul + long-term memory + shared context + group messaging protocol
   const soul = getPersona('Claw');
   const longTermMem = loadLongTermMemory('Claw');
   let systemPrompt = soul;
   if (longTermMem) systemPrompt += '\n\n## Long-term Memory\n' + longTermMem;
   if (scratchText) systemPrompt += '\n\n' + scratchText;
+  if (isGroupTask) systemPrompt += GROUP_MESSAGING_PROTOCOL;
 
   appendMemory('Claw', 'user', description);
 
@@ -107,6 +165,7 @@ export async function runClaw(taskId, description) {
     });
 
     const isDelegated = checkDelegation(result, 'Claw', taskId, description);
+    if (!isDelegated && isGroupTask) checkGroupMessages(result, 'Claw', taskId);
     agent.status = 'done';
     if (!isDelegated) appendMemory('Claw', 'assistant', result.slice(0, 1000));
     if (state.tasks[taskId]) {
@@ -160,13 +219,14 @@ export async function runDeep(taskId, description) {
 
   const deepPrompt = `[NEW TASK — focus only on this request, ignore previous conversation history if unrelated]\n\n${description}`;
 
-  // Build system prompt: soul + long-term memory + shared context
+  // Build system prompt: soul + long-term memory + shared context + group messaging protocol
   const deepSoul = getPersona('Deep');
   const deepLongTermMem = loadLongTermMemory('Deep');
   const deepPad = loadScratchpad();
   let deepSystemContent = deepSoul;
   if (deepLongTermMem) deepSystemContent += '\n\n## Long-term Memory\n' + deepLongTermMem;
   if (deepPad.entries.length) deepSystemContent += '\n\nSHARED CONTEXT:\n' + deepPad.entries.map(e => `${e.key}: ${e.value}`).join('\n');
+  if (isGroupTask) deepSystemContent += GROUP_MESSAGING_PROTOCOL;
 
   try {
     const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
@@ -213,6 +273,7 @@ export async function runDeep(taskId, description) {
     }
 
     const isDelegated = checkDelegation(result, 'Deep', taskId, description);
+    if (!isDelegated && isGroupTask) checkGroupMessages(result, 'Deep', taskId);
     agent.status = 'done';
     if (!isDelegated) appendMemory('Deep', 'assistant', result.slice(0, 1000));
     if (deepStreamMsg) {
