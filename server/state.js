@@ -9,6 +9,9 @@ export const state = {
   groupMessages: [],
   taskCounter: 0,
   orchestrations: {},
+  // Thread-based multi-agent conversations
+  threads: {},
+  threadCounter: 0,
 };
 
 let groupMsgCounter = 0;

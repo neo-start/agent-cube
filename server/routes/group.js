@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { state, groupSseClients, pushGroupMsg } from '../state.js';
-import { runClaw, runDeep } from '../agents.js';
+import { runClaw, runDeep, createThread, runAgentInThread, resumeThread } from '../agents.js';
 import { orchestrate } from '../orchestration.js';
+import { listThreads } from '../memory.js';
 
 const router = Router();
 
@@ -24,64 +25,79 @@ router.get('/group/stream', (req, res) => {
   req.on('close', () => groupSseClients.delete(res));
 });
 
+// GET /api/group/threads — list saved threads
+router.get('/group/threads', (req, res) => {
+  const saved = listThreads();
+  const active = Object.values(state.threads);
+  res.json({ active, saved });
+});
+
 // POST /api/group/send
 router.post('/group/send', (req, res) => {
-  const { text, target, attachments } = req.body;
+  const { text, target, attachments, threadId } = req.body;
   if (!text) return res.status(400).json({ ok: false, error: 'Missing text' });
+
+  let prompt = text.replace(/@(Claw|Deep)\b/gi, '').trim();
+  if (attachments && attachments.length > 0) {
+    prompt += '\n\nATTACHMENTS:\n' + attachments.map(a => `- ${a.name} [${a.type}]: ${a.url}`).join('\n');
+  }
+
+  // Resume a paused thread
+  if (threadId && state.threads[threadId]) {
+    pushGroupMsg('user', 'User', text, { threadId, attachments: attachments || [] });
+    const resumed = resumeThread(threadId, prompt);
+    return res.json({ ok: true, threadId, resumed });
+  }
 
   pushGroupMsg('user', 'User', text, { target: target || null, attachments: attachments || [] });
 
-  const mentions = [...text.matchAll(/@(Claw|Deep)\b/gi)].map(m => m[1]);
-  const uniqueMentions = [...new Set(mentions.map(m => m.charAt(0).toUpperCase() + m.slice(1).toLowerCase()))];
+  const mentions = [...text.matchAll(/@(Claw|Deep)\b/gi)].map(m =>
+    m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase()
+  );
+  const uniqueMentions = [...new Set(mentions)];
+
+  // ── Multi-agent: start a Thread ──────────────────────────────────────────
+  if (!target && uniqueMentions.length >= 2) {
+    const thread = createThread(uniqueMentions, prompt);
+    pushGroupMsg('thread-start', 'System', `Discussion started: ${thread.topic}`, { threadId: thread.id, participants: thread.participants });
+    // First agent kicks off
+    runAgentInThread(uniqueMentions[0], thread.id);
+    return res.json({ ok: true, threadId: thread.id });
+  }
+
+  // ── Single agent explicitly @mentioned ───────────────────────────────────
   const agent = target || (uniqueMentions.length === 1 ? uniqueMentions[0] : null);
-  const routeBoth = !target && uniqueMentions.length >= 2;
 
-  const taskId = `task-${++state.taskCounter}-${Date.now()}`;
-  let prompt = text.replace(/@(Claw|Deep)\b/gi, '').trim();
-
-  if (attachments && attachments.length > 0) {
-    const attachLines = attachments.map(a => `- ${a.name} [${a.type}]: ${a.url}`).join('\n');
-    prompt += `\n\nATTACHMENTS:\n${attachLines}`;
-  }
-
-  state.tasks[taskId] = {
-    id: taskId,
-    agent: agent || 'Orchestrator',
-    description: prompt,
-    by: 'User',
-    status: 'working',
-    latestLog: null,
-    result: null,
-    delegatedBy: null,
-    parentTaskId: null,
-    source: 'group',
-    createdAt: new Date().toISOString(),
-    attachments: attachments || [],
-  };
-
-  if (routeBoth) {
-    const clawTaskId = `task-${++state.taskCounter}-${Date.now()}`;
-    const deepTaskId = `task-${++state.taskCounter}-${Date.now()}`;
-    state.tasks[clawTaskId] = { id: clawTaskId, agent: 'Claw', description: prompt, by: 'User', status: 'working', latestLog: null, result: null, delegatedBy: null, parentTaskId: null, source: 'group', createdAt: new Date().toISOString(), attachments: attachments || [] };
-    state.tasks[deepTaskId] = { id: deepTaskId, agent: 'Deep', description: prompt, by: 'User', status: 'working', latestLog: null, result: null, delegatedBy: null, parentTaskId: null, source: 'group', createdAt: new Date().toISOString(), attachments: attachments || [] };
-    runClaw(clawTaskId, prompt);
-    runDeep(deepTaskId, prompt);
-  } else if (agent === 'Claw') {
-    runClaw(taskId, prompt);
-  } else if (agent === 'Deep') {
-    runDeep(taskId, prompt);
-  } else {
-    const orchestrationId = `orch-${state.taskCounter}-${Date.now()}`;
-    state.orchestrations[orchestrationId] = {
-      id: orchestrationId, description: prompt, by: 'User', status: 'routing',
-      route: null, reason: null, clawTaskId: null, deepTaskId: null,
-      clawResult: null, deepResult: null, merged: null,
-      createdAt: new Date().toISOString(),
+  if (agent === 'Claw' || agent === 'Deep') {
+    const taskId = `task-${++state.taskCounter}-${Date.now()}`;
+    state.tasks[taskId] = {
+      id: taskId, agent, description: prompt, by: 'User',
+      status: 'working', latestLog: null, result: null,
+      delegatedBy: null, parentTaskId: null, source: 'group',
+      createdAt: new Date().toISOString(), attachments: attachments || [],
     };
-    pushGroupMsg('status', 'Orchestrator', 'Routing task...', { status: 'working' });
-    orchestrate(orchestrationId, prompt);
+    if (agent === 'Claw') runClaw(taskId, prompt);
+    else runDeep(taskId, prompt);
+    return res.json({ ok: true, taskId });
   }
 
+  // ── No @ → Orchestrator routes ────────────────────────────────────────────
+  const taskId = `task-${++state.taskCounter}-${Date.now()}`;
+  state.tasks[taskId] = {
+    id: taskId, agent: 'Orchestrator', description: prompt, by: 'User',
+    status: 'working', latestLog: null, result: null,
+    delegatedBy: null, parentTaskId: null, source: 'group',
+    createdAt: new Date().toISOString(), attachments: attachments || [],
+  };
+  const orchestrationId = `orch-${state.taskCounter}-${Date.now()}`;
+  state.orchestrations[orchestrationId] = {
+    id: orchestrationId, description: prompt, by: 'User', status: 'routing',
+    route: null, reason: null, clawTaskId: null, deepTaskId: null,
+    clawResult: null, deepResult: null, merged: null,
+    createdAt: new Date().toISOString(),
+  };
+  pushGroupMsg('status', 'Orchestrator', 'Routing task...', { status: 'working' });
+  orchestrate(orchestrationId, prompt);
   res.json({ ok: true, taskId });
 });
 

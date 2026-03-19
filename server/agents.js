@@ -1,5 +1,5 @@
 import { state, broadcast, broadcastGroup, pushGroupMsg } from './state.js';
-import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, loadLongTermMemory } from './memory.js';
+import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, loadLongTermMemory, appendInbox, readInbox, clearInbox, saveThread } from './memory.js';
 import { streamChat } from './claude-proxy.js';
 
 // Messaging protocol injected into every group-task system prompt
@@ -300,4 +300,192 @@ export async function runDeep(taskId, description) {
     if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
     broadcast();
   }
+}
+
+// ─── Thread-based multi-agent conversation ────────────────────────────────────
+
+const NEXT_PROTOCOL = `
+## Conversation Protocol
+You are in a multi-agent group discussion. At the very end of your response, on its own line, declare who should speak next:
+
+[NEXT:Deep]        — pass turn to Deep
+[NEXT:Claw]        — pass turn to Claw
+[NEXT:Claw,Deep]   — both agents respond (parallel)
+[NEXT:User]        — pause and wait for user input
+[DONE]             — the discussion is complete
+
+Rules:
+- Always end with exactly one of these directives
+- You can invite an agent not yet in the conversation — they'll join automatically
+- If you omit the directive, the turn passes back to User by default
+- Keep responses focused; don't repeat what others already said
+`;
+
+// Parse [NEXT:X] or [DONE] from the tail of a response
+function parseNextDirective(text) {
+  const tail = text.slice(-300);
+  if (/\[DONE\]/i.test(tail)) return { type: 'done' };
+  const m = tail.match(/\[NEXT:([^\]]+)\]/i);
+  if (m) {
+    const targets = m[1].split(',').map(s => s.trim()).filter(Boolean);
+    return { type: 'next', targets };
+  }
+  return { type: 'user' }; // default: return to user
+}
+
+// Create a new Thread
+export function createThread(participants, firstMessage, fromUser = 'User') {
+  const threadId = `thread-${++state.threadCounter}-${Date.now()}`;
+  const thread = {
+    id: threadId,
+    topic: firstMessage.slice(0, 80),
+    participants: [...participants],
+    messages: [{ from: fromUser, content: firstMessage, timestamp: new Date().toISOString() }],
+    status: 'active',
+    maxTurns: 20,
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+    endReason: null,
+  };
+  state.threads[threadId] = thread;
+  return thread;
+}
+
+// Build context prompt for an agent's turn
+function buildThreadContext(thread, agentName) {
+  const history = thread.messages
+    .map(m => `${m.from}: ${m.content}`)
+    .join('\n\n---\n\n');
+  return `You are in an ongoing multi-agent discussion.\nParticipants: ${[...thread.participants, 'User'].join(', ')}\n\nConversation so far:\n${history}\n\nNow it's your turn (${agentName}).`;
+}
+
+// Run one turn for an agent inside a Thread
+export async function runAgentInThread(agentName, threadId) {
+  const thread = state.threads[threadId];
+  if (!thread || thread.status !== 'active') return;
+
+  // Dynamically add agent if not yet in participants
+  if (!thread.participants.includes(agentName)) {
+    thread.participants.push(agentName);
+    pushGroupMsg('thread-join', agentName, `${agentName} joined the discussion`, { threadId });
+  }
+
+  const agent = state.agents[agentName];
+  if (!agent) return;
+
+  agent.status = 'working';
+  agent.title = thread.topic;
+  agent.latestLog = 'Thinking...';
+  agent._startedAt = Date.now();
+  broadcast();
+
+  pushGroupMsg('status', agentName, 'Thinking...', { status: 'working', threadId });
+  const streamMsg = pushGroupMsg('stream', agentName, '', { threadId, status: 'streaming' });
+
+  // Build system prompt
+  const soul = getPersona(agentName);
+  const longTermMem = loadLongTermMemory(agentName);
+  const pad = loadScratchpad();
+  let system = soul;
+  if (longTermMem) system += '\n\n## Long-term Memory\n' + longTermMem;
+  if (pad.entries.length) system += '\n\nSHARED CONTEXT:\n' + pad.entries.map(e => `${e.key}: ${e.value}`).join('\n');
+  system += NEXT_PROTOCOL;
+
+  const userMsg = buildThreadContext(thread, agentName);
+
+  try {
+    let result = '';
+
+    if (agentName === 'Claw') {
+      await streamChat({
+        agentName: 'Claw',
+        system,
+        userMessage: userMsg,
+        onDelta: (_, accumulated) => {
+          result = accumulated;
+          agent.latestLog = result.slice(-800);
+          streamMsg.content = result;
+          broadcastGroup({ ...streamMsg, partial: true });
+          broadcast();
+        },
+      });
+    } else {
+      // DeepSeek (Deep and any future non-Claude agent)
+      const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk-b24861db17d640bba4ffb816c8863f34' },
+        body: JSON.stringify({
+          model: 'deepseek-chat',
+          messages: [{ role: 'system', content: system }, { role: 'user', content: userMsg }],
+          stream: true,
+        }),
+      });
+      if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')) {
+          try {
+            const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content || '';
+            result += delta;
+            agent.latestLog = result.slice(-800);
+            streamMsg.content = result;
+            broadcastGroup({ ...streamMsg, partial: true });
+            broadcast();
+          } catch {}
+        }
+      }
+    }
+
+    // Append to thread history
+    thread.messages.push({ from: agentName, content: result, timestamp: new Date().toISOString() });
+
+    streamMsg.type = 'reply';
+    streamMsg.content = result;
+    streamMsg.status = 'done';
+    broadcastGroup(streamMsg);
+
+    agent.status = 'idle';
+    broadcast();
+
+    // Parse [NEXT] and dispatch
+    const directive = parseNextDirective(result);
+
+    if (directive.type === 'done' || thread.messages.length >= thread.maxTurns) {
+      thread.status = 'done';
+      thread.endedAt = new Date().toISOString();
+      thread.endReason = directive.type === 'done' ? 'agent-done' : 'max-turns';
+      saveThread(thread);
+      pushGroupMsg('thread-end', agentName, '', { threadId, endReason: thread.endReason });
+    } else if (directive.type === 'user') {
+      thread.status = 'paused';
+      pushGroupMsg('thread-pause', agentName, '', { threadId });
+    } else {
+      // Pass turn to each named agent (stagger parallel calls slightly)
+      directive.targets.forEach((nextAgent, i) => {
+        const name = nextAgent.charAt(0).toUpperCase() + nextAgent.slice(1).toLowerCase();
+        setTimeout(() => runAgentInThread(name, threadId), i * 200);
+      });
+    }
+  } catch (err) {
+    agent.status = 'blocked';
+    agent.latestLog = `Error: ${err.message}`;
+    streamMsg.type = 'reply';
+    streamMsg.content = `Error: ${err.message}`;
+    streamMsg.status = 'error';
+    broadcastGroup(streamMsg);
+    broadcast();
+  }
+}
+
+// Resume a paused thread when user follows up
+export function resumeThread(threadId, userMessage, nextAgent) {
+  const thread = state.threads[threadId];
+  if (!thread) return false;
+  thread.messages.push({ from: 'User', content: userMessage, timestamp: new Date().toISOString() });
+  thread.status = 'active';
+  runAgentInThread(nextAgent || thread.participants[0], threadId);
+  return true;
 }
