@@ -1,0 +1,39 @@
+import express from 'express';
+import cors from 'cors';
+import { join } from 'path';
+import { __dirname, PORT, UPLOADS_DIR } from './config.js';
+
+// Routes
+import tasksRouter from './routes/tasks.js';
+import groupRouter from './routes/group.js';
+import statusRouter from './routes/status.js';
+import messagesRouter from './routes/messages.js';
+import memoryRouter from './routes/memory.js';
+import orchestrateRouter from './routes/orchestrate.js';
+import scratchpadRouter from './routes/scratchpad.js';
+import uploadRouter from './routes/upload.js';
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// All API routers are mounted at /api
+app.use('/api', tasksRouter);
+app.use('/api', groupRouter);
+app.use('/api', statusRouter);
+app.use('/api', messagesRouter);
+app.use('/api', memoryRouter);
+app.use('/api', orchestrateRouter);
+app.use('/api', scratchpadRouter);
+app.use('/api', uploadRouter);
+
+// Static serving (production)
+app.use('/uploads', express.static(UPLOADS_DIR));
+app.use(express.static(join(__dirname, '..', 'dist')));
+app.get('*', (_req, res) => {
+  res.sendFile(join(__dirname, '..', 'dist', 'index.html'));
+});
+
+app.listen(PORT, () => {
+  console.log(`Agent Cube server running at http://localhost:${PORT}`);
+});

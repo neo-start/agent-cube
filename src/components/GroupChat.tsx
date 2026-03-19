@@ -178,10 +178,23 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
     }
   }, [messages, channel]);
 
+  // Hide status messages once the agent has a reply/stream for that task
+  const visibleMessages = messages.filter((msg, idx) => {
+    if (msg.type !== 'status') return true;
+    // Check if there's a reply or stream from same agent after this status
+    const hasFollowUp = messages.some((m, i) =>
+      i > idx &&
+      m.from === msg.from &&
+      (m.type === 'reply' || m.type === 'stream') &&
+      (!msg.taskId || m.taskId === msg.taskId)
+    );
+    return !hasFollowUp;
+  });
+
   // Filter messages by channel
   const filteredMessages = channel === 'group'
-    ? messages
-    : messages.filter(m =>
+    ? visibleMessages
+    : visibleMessages.filter(m =>
         m.from === channel || m.target === channel ||
         (m.type === 'user' && m.target === channel) ||
         (m.type === 'delegate' && (m.from === channel || m.toAgent === channel))

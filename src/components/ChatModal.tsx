@@ -127,7 +127,14 @@ function parseDelegation(text: string): { toAgent: string; body: string } | null
 }
 
 export function ChatModal({ agent, onClose, inline = false }: Props) {
-  const [messages, setMessages] = useState<ChatMessage[]>(() => loadMessages(agent.name));
+  const [messages, setMessages] = useState<ChatMessage[]>(() => {
+    // Recover stale 'thinking' messages from previous sessions
+    return loadMessages(agent.name).map(m =>
+      (m.status === 'thinking' || m.status === 'sending')
+        ? { ...m, status: 'error' as const, text: m.text || '(interrupted — server restarted)' }
+        : m
+    );
+  });
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [autoMode, setAutoMode] = useState(false);
