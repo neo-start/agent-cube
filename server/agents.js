@@ -1,6 +1,6 @@
 import { state, broadcast, broadcastGroup, pushGroupMsg } from './state.js';
 import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, loadLongTermMemory } from './memory.js';
-import { streamChat } from './claude.js';
+import { streamChat } from './claude-proxy.js';
 
 // Fallback personas if soul files don't exist
 const DEFAULT_PERSONAS = {
@@ -91,8 +91,8 @@ export async function runClaw(taskId, description) {
   try {
     let result = '';
     await streamChat({
+      agentName: 'Claw',
       system: systemPrompt,
-      messages: historyMessages,
       userMessage: clawPrompt,
       onDelta: (_delta, accumulated) => {
         result = accumulated;
