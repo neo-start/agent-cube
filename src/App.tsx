@@ -30,7 +30,7 @@ export default function App() {
   const [toast, setToast] = useState<{ text: string; color: string } | null>(null);
   const [darkMode, setDarkMode] = useState(true);
   const [groupChatOpen, setGroupChatOpen] = useState(false);
-  const [groupChatChannel, setGroupChatChannel] = useState<string | null>(null);
+  const [groupChatChannel, setGroupChatChannel] = useState<'group' | 'Claw' | 'Deep' | null>(null);
 
   const showToast = (text: string, color: string) => {
     setToast({ text, color });
@@ -69,7 +69,7 @@ export default function App() {
         onAssignTask={undefined}
         darkMode={darkMode}
         onDeskClick={(agentName: string) => {
-          setGroupChatChannel(agentName);
+          setGroupChatChannel(agentName as 'Claw' | 'Deep' | 'group');
           setGroupChatOpen(true);
         }}
       />

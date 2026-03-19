@@ -4,15 +4,19 @@ import { ChatModal } from './ChatModal';
 
 interface GroupMessage {
   id: string;
-  type: 'user' | 'reply' | 'delegate' | 'status' | 'stream';
+  type: 'user' | 'reply' | 'delegate' | 'status' | 'stream' | 'agent-msg'
+      | 'thread-start' | 'thread-end' | 'thread-pause' | 'thread-join';
   from: string;
   content: string;
   timestamp: string;
   target?: string;
   toAgent?: string;
   taskId?: string;
+  threadId?: string;
   status?: string;
   partial?: boolean;
+  participants?: string[];
+  endReason?: string;
   attachments?: UploadedFile[];
 }
 
@@ -145,6 +149,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionIdx, setMentionIdx] = useState(0);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, string>>({});
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
   const [hoveredFileId, setHoveredFileId] = useState<string | null>(null);
   const [hoveredAttId, setHoveredAttId] = useState<string | null>(null);
@@ -186,6 +191,16 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
     es.onmessage = (e) => {
       try {
         const msg: GroupMessage = JSON.parse(e.data);
+
+        // Track thread pause/resume state
+        if (msg.type === 'thread-pause' && msg.threadId) {
+          setActiveThreadId(msg.threadId);
+        } else if (msg.type === 'thread-end') {
+          setActiveThreadId(null);
+        } else if (msg.type === 'thread-start') {
+          setActiveThreadId(null);
+        }
+
         setMessages(prev => {
           if (msg.partial && msg.type === 'stream') {
             const idx = prev.findIndex(m => m.id === msg.id);
@@ -293,10 +308,16 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
       await fetch(`${API}/api/group/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, target, attachments: sendFiles }),
+        body: JSON.stringify({
+          text,
+          target,
+          attachments: sendFiles,
+          // Resume paused thread if one is active
+          ...(activeThreadId && channel === 'group' ? { threadId: activeThreadId } : {}),
+        }),
       });
     } catch {}
-  }, [input, files, channel]);
+  }, [input, files, channel, activeThreadId]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
@@ -396,6 +417,66 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
             {' → '}
             <span style={{ fontWeight: 700 }}>{msg.toAgent}</span>
             {': '}{msg.content.slice(0, 120)}{msg.content.length > 120 ? '...' : ''}
+          </span>
+        </div>
+      );
+    }
+
+    // Thread system events
+    if (msg.type === 'thread-start') {
+      return (
+        <div key={msg.id} style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }}>
+          <span style={{
+            fontSize: 11,
+            background: 'rgba(77, 159, 255, 0.1)',
+            border: '1px solid rgba(77, 159, 255, 0.25)',
+            padding: '4px 14px', borderRadius: 10,
+            color: '#4d9fff',
+          }}>
+            Thread started · {(msg.participants || []).join(' + ')} · {msg.content}
+          </span>
+        </div>
+      );
+    }
+
+    if (msg.type === 'thread-join') {
+      return (
+        <div key={msg.id} style={{ display: 'flex', justifyContent: 'center', padding: '4px 0' }}>
+          <span style={{ fontSize: 11, color: '#6b7280' }}>
+            <span style={{ color: AGENT_COLORS[msg.from] || '#6b7280', fontWeight: 600 }}>{msg.from}</span>
+            {' joined the discussion'}
+          </span>
+        </div>
+      );
+    }
+
+    if (msg.type === 'thread-pause') {
+      return (
+        <div key={msg.id} style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }}>
+          <span style={{
+            fontSize: 11,
+            background: 'rgba(234, 179, 8, 0.1)',
+            border: '1px solid rgba(234, 179, 8, 0.25)',
+            padding: '4px 14px', borderRadius: 10,
+            color: '#eab308',
+          }}>
+            Waiting for your input · reply to continue the discussion
+          </span>
+        </div>
+      );
+    }
+
+    if (msg.type === 'thread-end') {
+      return (
+        <div key={msg.id} style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }}>
+          <span style={{
+            fontSize: 11,
+            background: 'rgba(107, 114, 128, 0.1)',
+            border: '1px solid rgba(107, 114, 128, 0.2)',
+            padding: '4px 14px', borderRadius: 10,
+            color: '#6b7280',
+          }}>
+            Discussion ended {msg.endReason === 'max-turns' ? '(max turns reached)' : ''}
           </span>
         </div>
       );
@@ -744,6 +825,26 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
                   )}
                   {filteredMessages.map(renderMessage)}
                 </div>
+
+                {/* Thread pause indicator */}
+                {activeThreadId && (
+                  <div style={{
+                    padding: '6px 20px',
+                    background: 'rgba(234, 179, 8, 0.08)',
+                    borderTop: '1px solid rgba(234, 179, 8, 0.2)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  }}>
+                    <span style={{ fontSize: 11, color: '#eab308' }}>
+                      Thread paused — your reply will continue the discussion
+                    </span>
+                    <button
+                      onClick={() => setActiveThreadId(null)}
+                      style={{ fontSize: 10, color: '#6b7280', background: 'none', border: 'none', cursor: 'pointer' }}
+                    >
+                      dismiss
+                    </button>
+                  </div>
+                )}
 
                 {/* File preview — selected & pending */}
                 {files.length > 0 && (
