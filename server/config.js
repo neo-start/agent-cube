@@ -15,8 +15,10 @@ export const MEMORY_DIR = path.join(DATA_DIR, 'memory');
 export const LOGS_DIR = path.join(DATA_DIR, 'logs');
 export const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 export const SCRATCHPAD_FILE = path.join(DATA_DIR, 'scratchpad.json');
+export const SOULS_DIR = path.join(DATA_DIR, 'souls');
+export const LONG_TERM_DIR = path.join(DATA_DIR, 'memory', 'long-term');
 
-[DATA_DIR, MEMORY_DIR, LOGS_DIR, UPLOADS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+[DATA_DIR, MEMORY_DIR, LOGS_DIR, UPLOADS_DIR, SOULS_DIR, LONG_TERM_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
 
 const storage = multer.diskStorage({
   destination: UPLOADS_DIR,

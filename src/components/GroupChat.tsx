@@ -40,7 +40,7 @@ const CHANNELS: { id: Channel; label: string; icon: string; color: string; desc:
   { id: 'Deep', label: 'Deep', icon: 'D', color: '#a78bfa', desc: 'DeepSeek · Thinker' },
 ];
 
-const MENTIONABLE = AGENT_CONFIGS.map(a => a.name); // ['Claw', 'Deep']
+const MENTIONABLE = AGENT_CONFIGS.map(a => a.name);
 
 function formatTime(iso: string) {
   try {
@@ -48,6 +48,44 @@ function formatTime(iso: string) {
   } catch {
     return '';
   }
+}
+
+function formatSize(bytes: number): string {
+  if (!bytes) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fileTypeIcon(name: string): string {
+  const ext = name.split('.').pop()?.toLowerCase() || '';
+  const icons: Record<string, string> = {
+    pdf: '📄', doc: '📝', docx: '📝', xls: '📊', xlsx: '📊',
+    ppt: '📋', pptx: '📋', zip: '🗜️', tar: '🗜️', gz: '🗜️', rar: '🗜️',
+    mp4: '🎬', mov: '🎬', avi: '🎬', webm: '🎬',
+    mp3: '🎵', wav: '🎵', flac: '🎵', ogg: '🎵',
+    js: '💻', ts: '💻', py: '💻', json: '📋',
+    txt: '📄', csv: '📊', md: '📝',
+  };
+  return icons[ext] || '📎';
+}
+
+// Paperclip SVG icon
+function PaperclipIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
+
+// Spinner SVG
+function Spinner() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 0.8s linear infinite' }}>
+      <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+    </svg>
+  );
 }
 
 function MessageText({ text }: { text: string }) {
@@ -91,24 +129,29 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
   };
   const [channel, setChannel] = useState<Channel>('group');
 
-  // Sync channel when opened from external (desk click)
   useEffect(() => {
     if (isOpen && initialChannel) {
       setChannel(initialChannel as Channel);
     }
   }, [isOpen, initialChannel]);
+
   const [messages, setMessages] = useState<GroupMessage[]>([]);
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<UploadedFile[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionIdx, setMentionIdx] = useState(0);
   const [agentStatuses, setAgentStatuses] = useState<Record<string, string>>({});
+  const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
+  const [hoveredFileId, setHoveredFileId] = useState<string | null>(null);
+  const [hoveredAttId, setHoveredAttId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Load initial messages
   useEffect(() => {
     if (!open) return;
     fetch(`${API}/api/group`)
@@ -117,7 +160,6 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
       .catch(() => {});
   }, [open]);
 
-  // Fetch agent statuses for sidebar
   useEffect(() => {
     if (!open) return;
     const fetchStatus = () => {
@@ -137,7 +179,6 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
     return () => clearInterval(iv);
   }, [open]);
 
-  // SSE for live updates
   useEffect(() => {
     if (!open) return;
     const es = new EventSource(`${API}/api/group/stream`);
@@ -171,17 +212,14 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
     return () => es.close();
   }, [open]);
 
-  // Auto-scroll
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, channel]);
 
-  // Hide status messages once the agent has a reply/stream for that task
   const visibleMessages = messages.filter((msg, idx) => {
     if (msg.type !== 'status') return true;
-    // Check if there's a reply or stream from same agent after this status
     const hasFollowUp = messages.some((m, i) =>
       i > idx &&
       m.from === msg.from &&
@@ -191,7 +229,6 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
     return !hasFollowUp;
   });
 
-  // Filter messages by channel
   const filteredMessages = channel === 'group'
     ? visibleMessages
     : visibleMessages.filter(m =>
@@ -201,6 +238,8 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
       );
 
   const handleUpload = useCallback(async (fileList: FileList) => {
+    setUploading(true);
+    setUploadError(null);
     const fd = new FormData();
     const rawFiles = Array.from(fileList);
     for (const f of rawFiles) fd.append('files', f);
@@ -213,16 +252,35 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
           localPreview: rawFiles[i]?.type.startsWith('image/') ? URL.createObjectURL(rawFiles[i]) : undefined,
         }));
         setFiles(prev => [...prev, ...uploaded]);
+      } else {
+        setUploadError('Upload failed');
       }
-    } catch {}
+    } catch {
+      setUploadError('Upload failed — check connection');
+    } finally {
+      setUploading(false);
+    }
     if (fileRef.current) fileRef.current.value = '';
   }, []);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = Array.from(e.clipboardData.items);
+    const pastedFiles = items
+      .filter(item => item.kind === 'file')
+      .map(item => item.getAsFile())
+      .filter(Boolean) as File[];
+    if (pastedFiles.length > 0) {
+      e.preventDefault();
+      const dt = new DataTransfer();
+      pastedFiles.forEach(f => dt.items.add(f));
+      handleUpload(dt.files);
+    }
+  }, [handleUpload]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text) return;
 
-    // If in agent channel, auto-target that agent
     const mentionMatch = text.match(/@(Claw|Deep)/i);
     const target = channel !== 'group' ? channel : (mentionMatch ? mentionMatch[1] : undefined);
 
@@ -240,12 +298,10 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
     } catch {}
   }, [input, files, channel]);
 
-  // @ mention detection
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setInput(val);
 
-    // Check for @ trigger
     const cursorPos = e.target.selectionStart || 0;
     const textBefore = val.slice(0, cursorPos);
     const atMatch = textBefore.match(/@(\w*)$/);
@@ -302,22 +358,18 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
     }
   };
 
-  // Status color
   const statusColor = (s: string) => {
     const map: Record<string, string> = { idle: '#6b7280', working: '#22c55e', done: '#eab308', blocked: '#ef4444' };
     return map[s] || '#6b7280';
   };
 
-  // Render a single message
   const renderMessage = (msg: GroupMessage) => {
     const color = AGENT_COLORS[msg.from] || '#6b7280';
     const isUser = msg.from === 'User';
 
     if (msg.type === 'status') {
       return (
-        <div key={msg.id} style={{
-          display: 'flex', justifyContent: 'center', padding: '4px 0',
-        }}>
+        <div key={msg.id} style={{ display: 'flex', justifyContent: 'center', padding: '4px 0' }}>
           <span style={{
             fontSize: 11, color: '#6b7280',
             background: 'rgba(255,255,255,0.05)',
@@ -332,9 +384,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
 
     if (msg.type === 'delegate') {
       return (
-        <div key={msg.id} style={{
-          display: 'flex', justifyContent: 'center', padding: '4px 0',
-        }}>
+        <div key={msg.id} style={{ display: 'flex', justifyContent: 'center', padding: '4px 0' }}>
           <span style={{
             fontSize: 11,
             background: 'rgba(245, 158, 11, 0.1)',
@@ -384,34 +434,80 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
             <div style={{ fontSize: 11, fontWeight: 700, color, marginBottom: 2 }}>
               {AGENT_LABELS[msg.from] || msg.from}
               {isStreaming && (
-                <span style={{
-                  marginLeft: 6, fontSize: 10, color: '#22c55e',
-                  animation: 'pulse 1.5s infinite',
-                }}>typing...</span>
+                <span style={{ marginLeft: 6, fontSize: 10, color: '#22c55e', animation: 'pulse 1.5s infinite' }}>
+                  typing...
+                </span>
               )}
             </div>
           )}
           <div style={{ fontSize: 13, color: '#e5e7eb' }}>
             <MessageText text={msg.content || (isStreaming ? '...' : '')} />
           </div>
-          {/* Attachments */}
+
+          {/* Received attachments */}
           {msg.attachments && msg.attachments.length > 0 && (
-            <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
-              {msg.attachments.map((att: UploadedFile) => (
+            <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {msg.attachments.map((att: UploadedFile) =>
                 att.type === 'image' ? (
-                  <img key={att.id} src={att.localPreview || att.url}
-                    style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 6, cursor: 'pointer' }}
-                    onClick={() => window.open(att.url, '_blank')}
-                  />
+                  <div
+                    key={att.id}
+                    style={{ position: 'relative', display: 'inline-block', cursor: 'zoom-in' }}
+                    onMouseEnter={() => setHoveredAttId(att.id)}
+                    onMouseLeave={() => setHoveredAttId(null)}
+                    onClick={() => setLightbox({ url: att.url, name: att.name })}
+                  >
+                    <img
+                      src={att.localPreview || att.url}
+                      style={{
+                        maxWidth: '100%', maxHeight: 200, borderRadius: 8,
+                        display: 'block',
+                        transform: hoveredAttId === att.id ? 'scale(1.02)' : 'scale(1)',
+                        transition: 'transform 0.15s ease',
+                        boxShadow: hoveredAttId === att.id ? '0 4px 16px rgba(0,0,0,0.4)' : 'none',
+                      }}
+                    />
+                    {hoveredAttId === att.id && (
+                      <div style={{
+                        position: 'absolute', inset: 0,
+                        background: 'rgba(0,0,0,0.25)',
+                        borderRadius: 8,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        <span style={{ fontSize: 22 }}>🔍</span>
+                      </div>
+                    )}
+                  </div>
                 ) : (
-                  <a key={att.id} href={att.url} download={att.name}
-                    style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#60a5fa', fontSize: 12, textDecoration: 'none' }}>
-                    📄 {att.name}
-                  </a>
+                  <div key={att.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '8px 12px',
+                    background: 'rgba(255,255,255,0.06)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    borderRadius: 8,
+                  }}>
+                    <span style={{ fontSize: 22, flexShrink: 0 }}>{fileTypeIcon(att.name)}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontSize: 12, color: '#e5e7eb', fontWeight: 500,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>{att.name}</div>
+                      <div style={{ fontSize: 10, color: '#6b7280', marginTop: 1 }}>
+                        {att.name.split('.').pop()?.toUpperCase()}{att.size ? ` · ${formatSize(att.size)}` : ''}
+                      </div>
+                    </div>
+                    <a href={att.url} download={att.name} style={{
+                      background: 'rgba(77, 159, 255, 0.15)',
+                      border: '1px solid rgba(77, 159, 255, 0.3)',
+                      borderRadius: 6, padding: '4px 10px',
+                      color: '#4d9fff', fontSize: 12, textDecoration: 'none',
+                      flexShrink: 0, fontWeight: 600,
+                    }}>↓</a>
+                  </div>
                 )
-              ))}
+              )}
             </div>
           )}
+
           <div style={{ fontSize: 10, color: '#4b5563', marginTop: 4, textAlign: isUser ? 'right' : 'left' }}>
             {formatTime(msg.timestamp)}
           </div>
@@ -422,6 +518,47 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
 
   return (
     <>
+      {/* keyframe styles */}
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+      `}</style>
+
+      {/* Lightbox */}
+      {lightbox && (
+        <div
+          onClick={() => setLightbox(null)}
+          style={{
+            position: 'fixed', inset: 0,
+            background: 'rgba(0,0,0,0.92)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 999, cursor: 'zoom-out',
+          }}
+        >
+          <div onClick={e => e.stopPropagation()} style={{ position: 'relative', maxWidth: '90vw', maxHeight: '90vh' }}>
+            <img
+              src={lightbox.url}
+              alt={lightbox.name}
+              style={{ maxWidth: '90vw', maxHeight: '88vh', objectFit: 'contain', borderRadius: 10, display: 'block' }}
+            />
+            <div style={{
+              position: 'absolute', bottom: -32, left: 0, right: 0,
+              textAlign: 'center', fontSize: 12, color: '#9ca3af',
+            }}>{lightbox.name}</div>
+            <button
+              onClick={() => setLightbox(null)}
+              style={{
+                position: 'absolute', top: -14, right: -14,
+                width: 28, height: 28, borderRadius: '50%',
+                background: '#374151', border: '1px solid rgba(255,255,255,0.15)',
+                color: '#e5e7eb', cursor: 'pointer', fontSize: 14,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >×</button>
+          </div>
+        </div>
+      )}
+
       {/* Toggle button */}
       <button
         onClick={() => setOpen(o => !o)}
@@ -455,7 +592,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
           zIndex: 150,
           overflow: 'hidden',
         }}>
-          {/* ── Left sidebar ── */}
+          {/* Left sidebar */}
           <div style={{
             width: 220,
             borderRight: '1px solid rgba(255,255,255,0.08)',
@@ -487,7 +624,6 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
                     textAlign: 'left',
                   }}
                 >
-                  {/* Icon */}
                   <div style={{
                     width: 32, height: 32, borderRadius: 8,
                     background: `${ch.color}22`,
@@ -500,10 +636,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
                   </div>
 
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{
-                      fontSize: 13, fontWeight: 600,
-                      color: isActive ? '#e5e7eb' : '#9ca3af',
-                    }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: isActive ? '#e5e7eb' : '#9ca3af' }}>
                       {ch.label}
                     </div>
                     <div style={{ fontSize: 10, color: '#4b5563', display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -522,7 +655,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
             })}
           </div>
 
-          {/* ── Right: chat area ── */}
+          {/* Right: chat area */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             {/* Header */}
             <div style={{
@@ -544,7 +677,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
                     {channel === 'group' ? 'Group Chat' : `Chat with ${channel}`}
                   </span>
                   <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 8 }}>
-                    {channel === 'group' ? '@mention to target agent' : `Direct · file upload · task tracking`}
+                    {channel === 'group' ? '@mention to target agent' : 'Direct · file upload · task tracking'}
                   </span>
                 </div>
               </div>
@@ -554,7 +687,6 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
               }}>Close</button>
             </div>
 
-            {/* Agent channel: inline ChatModal with full direct chat features */}
             {channel !== 'group' ? (
               (() => {
                 const agentConfig = AGENT_CONFIGS.find(a => a.name === channel);
@@ -570,51 +702,141 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
             ) : (
               <>
                 {/* Group Messages — with drag & drop */}
-                <div ref={scrollRef} style={{
-                  flex: 1, overflowY: 'auto', padding: '12px 20px',
-                }}
-                  onDragOver={e => { e.preventDefault(); e.currentTarget.style.background = 'rgba(77, 159, 255, 0.05)'; }}
-                  onDragLeave={e => { e.currentTarget.style.background = ''; }}
-                  onDrop={e => { e.preventDefault(); e.currentTarget.style.background = ''; if (e.dataTransfer.files.length) handleUpload(e.dataTransfer.files); }}
+                <div
+                  ref={scrollRef}
+                  style={{
+                    flex: 1, overflowY: 'auto', padding: '12px 20px',
+                    position: 'relative',
+                    background: isDragging ? 'rgba(77, 159, 255, 0.03)' : undefined,
+                    transition: 'background 0.15s',
+                  }}
+                  onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+                  onDragLeave={e => {
+                    // Only clear if leaving the scroll container itself
+                    if (!e.currentTarget.contains(e.relatedTarget as Node)) setIsDragging(false);
+                  }}
+                  onDrop={e => {
+                    e.preventDefault();
+                    setIsDragging(false);
+                    if (e.dataTransfer.files.length) handleUpload(e.dataTransfer.files);
+                  }}
                 >
+                  {isDragging && (
+                    <div style={{
+                      position: 'absolute', inset: 12,
+                      border: '2px dashed rgba(77, 159, 255, 0.5)',
+                      borderRadius: 12,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      pointerEvents: 'none', zIndex: 5,
+                      background: 'rgba(77, 159, 255, 0.06)',
+                    }}>
+                      <div style={{ textAlign: 'center' }}>
+                        <div style={{ fontSize: 28, marginBottom: 6 }}>📎</div>
+                        <div style={{ color: '#4d9fff', fontSize: 14, fontWeight: 600 }}>Drop files to upload</div>
+                      </div>
+                    </div>
+                  )}
+
                   {filteredMessages.length === 0 && (
                     <div style={{ textAlign: 'center', color: '#4b5563', fontSize: 13, marginTop: 60 }}>
-                      Send a message to start the conversation · drag files here to upload
+                      Send a message to start the conversation · drag & drop or paste files to upload
                     </div>
                   )}
                   {filteredMessages.map(renderMessage)}
                 </div>
 
-                {/* File preview with thumbnails */}
+                {/* File preview — selected & pending */}
                 {files.length > 0 && (
                   <div style={{
-                    padding: '8px 20px',
+                    padding: '10px 20px',
                     borderTop: '1px solid rgba(255,255,255,0.06)',
                     display: 'flex', gap: 8, flexWrap: 'wrap',
+                    background: 'rgba(255,255,255,0.02)',
                   }}>
                     {files.map(f => (
-                      <div key={f.id} style={{
-                        position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 4,
-                        background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)',
-                        borderRadius: 8, padding: f.type === 'image' ? '2px' : '4px 8px',
-                      }}>
+                      <div
+                        key={f.id}
+                        style={{ position: 'relative' }}
+                        onMouseEnter={() => setHoveredFileId(f.id)}
+                        onMouseLeave={() => setHoveredFileId(null)}
+                      >
                         {f.type === 'image' && (f as any).localPreview ? (
-                          <img src={(f as any).localPreview} style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 6 }} />
+                          <div style={{ position: 'relative' }}>
+                            <img
+                              src={(f as any).localPreview}
+                              style={{
+                                width: 56, height: 56, objectFit: 'cover', borderRadius: 8,
+                                display: 'block', border: '1px solid rgba(255,255,255,0.12)',
+                                transform: hoveredFileId === f.id ? 'scale(1.05)' : 'scale(1)',
+                                transition: 'transform 0.15s ease',
+                              }}
+                            />
+                            <button
+                              onClick={() => setFiles(prev => prev.filter(x => x.id !== f.id))}
+                              style={{
+                                position: 'absolute', top: -6, right: -6,
+                                width: 18, height: 18, borderRadius: '50%',
+                                background: '#1f2937', border: '1px solid rgba(255,255,255,0.2)',
+                                color: '#e5e7eb', cursor: 'pointer', fontSize: 11,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                lineHeight: 1, fontWeight: 700,
+                              }}
+                            >×</button>
+                          </div>
                         ) : (
-                          <span style={{ fontSize: 11, color: '#9ca3af', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>📄 {f.name}</span>
+                          <div style={{
+                            display: 'flex', alignItems: 'center', gap: 8,
+                            padding: '6px 10px 6px 8px',
+                            background: 'rgba(255,255,255,0.06)',
+                            border: '1px solid rgba(255,255,255,0.12)',
+                            borderRadius: 8, maxWidth: 200,
+                          }}>
+                            <span style={{ fontSize: 18, flexShrink: 0 }}>{fileTypeIcon(f.name)}</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{
+                                fontSize: 11, color: '#e5e7eb',
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              }}>{f.name}</div>
+                              {f.size ? (
+                                <div style={{ fontSize: 10, color: '#6b7280', marginTop: 1 }}>
+                                  {f.name.split('.').pop()?.toUpperCase()} · {formatSize(f.size)}
+                                </div>
+                              ) : null}
+                            </div>
+                            <button
+                              onClick={() => setFiles(prev => prev.filter(x => x.id !== f.id))}
+                              style={{
+                                width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
+                                background: '#374151', border: '1px solid rgba(255,255,255,0.15)',
+                                color: '#e5e7eb', cursor: 'pointer', fontSize: 10,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontWeight: 700,
+                              }}
+                            >×</button>
+                          </div>
                         )}
-                        <button onClick={() => setFiles(prev => prev.filter(x => x.id !== f.id))} style={{
-                          position: f.type === 'image' ? 'absolute' : 'static', top: -4, right: -4,
-                          width: 16, height: 16, borderRadius: '50%', background: '#374151',
-                          border: 'none', color: '#fff', cursor: 'pointer', fontSize: 10,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
-                        }}>x</button>
                       </div>
                     ))}
                   </div>
                 )}
 
-                {/* Group input area with @ mention popup */}
+                {/* Upload error banner */}
+                {uploadError && (
+                  <div style={{
+                    padding: '6px 20px',
+                    background: 'rgba(239, 68, 68, 0.12)',
+                    borderTop: '1px solid rgba(239, 68, 68, 0.25)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  }}>
+                    <span style={{ fontSize: 12, color: '#fca5a5' }}>⚠ {uploadError}</span>
+                    <button
+                      onClick={() => setUploadError(null)}
+                      style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: 12 }}
+                    >Dismiss</button>
+                  </div>
+                )}
+
+                {/* Input area */}
                 <div style={{
                   padding: '12px 20px',
                   borderTop: '1px solid rgba(255,255,255,0.08)',
@@ -655,9 +877,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
                           }}>{name[0]}</div>
                           <div>
                             <div style={{ fontSize: 13, fontWeight: 600, color: '#e5e7eb' }}>{name}</div>
-                            <div style={{ fontSize: 10, color: '#6b7280' }}>
-                              {AGENT_LABELS[name] || name}
-                            </div>
+                            <div style={{ fontSize: 10, color: '#6b7280' }}>{AGENT_LABELS[name] || name}</div>
                           </div>
                         </button>
                       ))}
@@ -672,17 +892,34 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
                       style={{ display: 'none' }}
                       onChange={(e) => e.target.files && handleUpload(e.target.files)}
                     />
-                    <button onClick={() => fileRef.current?.click()} style={{
-                      background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-                      borderRadius: 6, padding: '6px 8px', cursor: 'pointer', color: '#9ca3af', fontSize: 14,
-                    }} title="Upload files">+</button>
+
+                    {/* Paperclip upload button */}
+                    <button
+                      onClick={() => fileRef.current?.click()}
+                      disabled={uploading}
+                      style={{
+                        background: 'rgba(255,255,255,0.06)',
+                        border: '1px solid rgba(255,255,255,0.1)',
+                        borderRadius: 8,
+                        padding: '8px 10px',
+                        cursor: uploading ? 'default' : 'pointer',
+                        color: uploading ? '#4d9fff' : '#9ca3af',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        transition: 'color 0.15s, background 0.15s',
+                        flexShrink: 0,
+                      }}
+                      title="Upload files (or paste images)"
+                    >
+                      {uploading ? <Spinner /> : <PaperclipIcon />}
+                    </button>
 
                     <textarea
                       ref={inputRef}
                       value={input}
                       onChange={handleInputChange}
                       onKeyDown={handleKeyDown}
-                      placeholder="Type a message... @ to mention"
+                      onPaste={handlePaste}
+                      placeholder="Type a message… @ to mention · paste image to upload"
                       rows={1}
                       style={{
                         flex: 1,
@@ -708,6 +945,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
                       fontSize: 13,
                       fontWeight: 600,
                       cursor: 'pointer',
+                      flexShrink: 0,
                     }}>Send</button>
                   </div>
                 </div>

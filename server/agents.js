@@ -13,9 +13,10 @@ export function checkDelegation(response, fromAgent, taskId, originalDesc) {
   const delegateDesc = match[2].trim() || originalDesc;
   if (toAgent === fromAgent) return false;
 
-  pushGroupMsg('delegate', fromAgent, delegateDesc, { toAgent, taskId });
-
   const parentTask = state.tasks[taskId];
+  const isGroupOrigin = parentTask && (parentTask.source === 'group' || parentTask.source === 'orchestrate' || parentTask.source === 'delegate');
+  if (isGroupOrigin) pushGroupMsg('delegate', fromAgent, delegateDesc, { toAgent, taskId });
+
   const inheritedAttachments = parentTask?.attachments || [];
 
   const subTaskId = `task-${++state.taskCounter}-${Date.now()}`;
@@ -48,9 +49,13 @@ export async function runClaw(taskId, description) {
   agent.latestLog = 'Thinking...';
   agent._startedAt = Date.now();
   broadcast();
-  pushGroupMsg('status', 'Claw', 'Thinking...', { status: 'working', taskId });
 
-  const streamMsg = pushGroupMsg('stream', 'Claw', '', { taskId, status: 'streaming' });
+  // Only push to group chat if task originated from group/orchestrate/delegate
+  const task = state.tasks[taskId];
+  const isGroupTask = task && (task.source === 'group' || task.source === 'orchestrate' || task.source === 'delegate');
+  if (isGroupTask) pushGroupMsg('status', 'Claw', 'Thinking...', { status: 'working', taskId });
+
+  const streamMsg = isGroupTask ? pushGroupMsg('stream', 'Claw', '', { taskId, status: 'streaming' }) : null;
 
   const mem = loadMemory('Claw');
   const historyMessages = mem.slice(-10).map(m => ({
@@ -107,8 +112,10 @@ export async function runClaw(taskId, description) {
           result += delta;
           agent.latestLog = result.slice(-800);
           if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
-          streamMsg.content = result;
-          broadcastGroup({ ...streamMsg, partial: true });
+          if (streamMsg) {
+            streamMsg.content = result;
+            broadcastGroup({ ...streamMsg, partial: true });
+          }
           broadcast();
         } catch {}
       }
@@ -121,10 +128,12 @@ export async function runClaw(taskId, description) {
       state.tasks[taskId].status = 'done';
       state.tasks[taskId].result = result;
     }
-    streamMsg.type = 'reply';
-    streamMsg.content = result;
-    streamMsg.status = 'done';
-    broadcastGroup(streamMsg);
+    if (streamMsg) {
+      streamMsg.type = 'reply';
+      streamMsg.content = result;
+      streamMsg.status = 'done';
+      broadcastGroup(streamMsg);
+    }
     logTask(taskId, { ...state.tasks[taskId], completedAt: new Date().toISOString() });
     broadcast();
     return;
@@ -136,10 +145,12 @@ export async function runClaw(taskId, description) {
     }
     agent.status = 'blocked';
     agent.latestLog = `Error: ${err.message}`;
-    streamMsg.type = 'reply';
-    streamMsg.content = `Error: ${err.message}`;
-    streamMsg.status = 'error';
-    broadcastGroup(streamMsg);
+    if (streamMsg) {
+      streamMsg.type = 'reply';
+      streamMsg.content = `Error: ${err.message}`;
+      streamMsg.status = 'error';
+      broadcastGroup(streamMsg);
+    }
     if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
     broadcast();
   }
@@ -155,9 +166,12 @@ export async function runDeep(taskId, description) {
   agent.latestLog = 'Thinking...';
   agent._startedAt = Date.now();
   broadcast();
-  pushGroupMsg('status', 'Deep', 'Thinking...', { status: 'working', taskId });
 
-  const deepStreamMsg = pushGroupMsg('stream', 'Deep', '', { taskId, status: 'streaming' });
+  const task = state.tasks[taskId];
+  const isGroupTask = task && (task.source === 'group' || task.source === 'orchestrate' || task.source === 'delegate');
+  if (isGroupTask) pushGroupMsg('status', 'Deep', 'Thinking...', { status: 'working', taskId });
+
+  const deepStreamMsg = isGroupTask ? pushGroupMsg('stream', 'Deep', '', { taskId, status: 'streaming' }) : null;
 
   const mem = loadMemory('Deep');
   const historyMessages = mem.slice(-10).map(m => ({
@@ -208,8 +222,10 @@ export async function runDeep(taskId, description) {
           result += delta;
           agent.latestLog = result.slice(-800);
           if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
-          deepStreamMsg.content = result;
-          broadcastGroup({ ...deepStreamMsg, partial: true });
+          if (deepStreamMsg) {
+            deepStreamMsg.content = result;
+            broadcastGroup({ ...deepStreamMsg, partial: true });
+          }
           broadcast();
         } catch {}
       }
@@ -218,10 +234,12 @@ export async function runDeep(taskId, description) {
     const isDelegated = checkDelegation(result, 'Deep', taskId, description);
     agent.status = 'done';
     if (!isDelegated) appendMemory('Deep', 'assistant', result.slice(0, 1000));
-    deepStreamMsg.type = 'reply';
-    deepStreamMsg.content = result;
-    deepStreamMsg.status = 'done';
-    broadcastGroup(deepStreamMsg);
+    if (deepStreamMsg) {
+      deepStreamMsg.type = 'reply';
+      deepStreamMsg.content = result;
+      deepStreamMsg.status = 'done';
+      broadcastGroup(deepStreamMsg);
+    }
     if (state.tasks[taskId]) {
       state.tasks[taskId].status = 'done';
       state.tasks[taskId].result = result;
@@ -231,10 +249,12 @@ export async function runDeep(taskId, description) {
   } catch (err) {
     agent.status = 'blocked';
     agent.latestLog = `Error: ${err.message}`;
-    deepStreamMsg.type = 'reply';
-    deepStreamMsg.content = `Error: ${err.message}`;
-    deepStreamMsg.status = 'error';
-    broadcastGroup(deepStreamMsg);
+    if (deepStreamMsg) {
+      deepStreamMsg.type = 'reply';
+      deepStreamMsg.content = `Error: ${err.message}`;
+      deepStreamMsg.status = 'error';
+      broadcastGroup(deepStreamMsg);
+    }
     if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
     broadcast();
   }
