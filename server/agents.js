@@ -317,12 +317,14 @@ You are in a multi-agent group discussion. At the very end of your response, on 
 Rules:
 - Always end with exactly one of these directives
 - You can invite an agent not yet in the conversation — they'll join automatically
-- If you omit the directive, the turn passes back to User by default
+- If you omit the directive, the system will automatically pass the turn to the other agent
 - Keep responses focused; don't repeat what others already said
 `;
 
-// Parse [NEXT:X] or [DONE] from the tail of a response
-function parseNextDirective(text) {
+// Parse [NEXT:X] or [DONE] from the tail of a response.
+// If no directive found, default to the other participant in the thread
+// rather than pausing — prevents conversation from breaking when agent forgets.
+function parseNextDirective(text, thread, currentAgent) {
   const tail = text.slice(-300);
   if (/\[DONE\]/i.test(tail)) return { type: 'done' };
   const m = tail.match(/\[NEXT:([^\]]+)\]/i);
@@ -330,7 +332,12 @@ function parseNextDirective(text) {
     const targets = m[1].split(',').map(s => s.trim()).filter(Boolean);
     return { type: 'next', targets };
   }
-  return { type: 'user' }; // default: return to user
+  // No directive found — auto-pass to another participant if available
+  if (thread && thread.participants.length >= 2) {
+    const other = thread.participants.find(p => p !== currentAgent);
+    if (other) return { type: 'next', targets: [other] };
+  }
+  return { type: 'user' }; // only pause if single-agent thread
 }
 
 // Create a new Thread
@@ -451,7 +458,7 @@ export async function runAgentInThread(agentName, threadId) {
     broadcast();
 
     // Parse [NEXT] and dispatch
-    const directive = parseNextDirective(result);
+    const directive = parseNextDirective(result, thread, agentName);
 
     if (directive.type === 'done' || thread.messages.length >= thread.maxTurns) {
       thread.status = 'done';
