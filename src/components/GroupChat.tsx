@@ -296,8 +296,9 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
     const text = input.trim();
     if (!text) return;
 
-    const mentionMatch = text.match(/@(Claw|Deep)/i);
-    const target = channel !== 'group' ? channel : (mentionMatch ? mentionMatch[1] : undefined);
+    // In group channel, let the server handle @mention routing (Thread vs single agent).
+    // Only set target when in a direct channel (Claw/Deep sidebar).
+    const target = channel !== 'group' ? channel : undefined;
 
     setInput('');
     setMentionOpen(false);
