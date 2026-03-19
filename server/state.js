@@ -1,3 +1,9 @@
+import { eventBus } from './event-bus.js';
+import { appendGroupMessage, loadGroupMessages, trimGroupMessagesFile, saveQueuedTasks } from './memory.js';
+
+// ── Initial state — groupMessages pre-loaded from disk ────────────────────────
+const persistedMessages = loadGroupMessages();
+
 export const state = {
   agents: {
     Claw: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null },
@@ -6,7 +12,7 @@ export const state = {
   },
   tasks: {},
   messages: [],
-  groupMessages: [],
+  groupMessages: persistedMessages,
   taskCounter: 0,
   orchestrations: {},
   // Thread-based multi-agent conversations
@@ -14,9 +20,7 @@ export const state = {
   threadCounter: 0,
 };
 
-let groupMsgCounter = 0;
-
-export const groupSseClients = new Set();
+// ── Legacy SSE clients (agent status panel) ───────────────────────────────────
 export const sseClients = new Set();
 
 export function broadcast() {
@@ -33,35 +37,58 @@ export function broadcast() {
   }
 }
 
-export function broadcastGroup(msg) {
-  const payload = JSON.stringify(msg);
-  for (const res of groupSseClients) {
-    res.write(`data: ${payload}\n\n`);
+// ── Per-agent task queues ─────────────────────────────────────────────────────
+// agentQueues: executable functions (not serializable)
+// agentQueueMeta: serializable metadata for persistence
+export const agentQueues = { Claw: [], Deep: [] };
+export const agentQueueMeta = { Claw: [], Deep: [] };
+
+export function enqueueAgentTask(agentName, taskFn, meta = null) {
+  agentQueues[agentName].push(taskFn);
+  if (meta) {
+    agentQueueMeta[agentName].push(meta);
+    saveQueuedTasks(agentQueueMeta);
   }
 }
 
-export function pushGroupMsg(type, from, content, meta = {}) {
-  const msg = {
-    id: `gm-${++groupMsgCounter}-${Date.now()}`,
-    type,
-    from,
-    content,
-    timestamp: new Date().toISOString(),
-    ...meta,
-  };
-  state.groupMessages.push(msg);
-  if (state.groupMessages.length > 500) state.groupMessages.shift();
-  broadcastGroup(msg);
-  return msg;
+export function dequeueAgentTask(agentName) {
+  const next = agentQueues[agentName].shift();
+  agentQueueMeta[agentName].shift(); // keep in sync
+  saveQueuedTasks(agentQueueMeta);
+  if (next) next();
 }
 
-// Watchdog: reset stuck agents after 8 minutes
+// ── Group chat: now routes through EventBus + persists to disk ────────────────
+export function pushGroupMsg(type, from, content, meta = {}) {
+  const event = eventBus.emit({ type, from, content, ...meta });
+
+  // Persist to disk (skip high-frequency streaming partials to avoid file spam)
+  if (!meta.partial) {
+    // Also keep in-memory groupMessages for /api/group polling
+    state.groupMessages.push(event);
+    if (state.groupMessages.length > 500) state.groupMessages.shift();
+    appendGroupMessage(event);
+  }
+
+  return event;
+}
+
+// broadcastGroup is no longer used directly; EventBus handles fan-out.
+export function broadcastGroup() {}
+
+// Re-export groupSseClients as an empty set (SSE is now managed per-connection in group.js)
+export const groupSseClients = new Set();
+
+// ── Trim persisted messages file every hour ───────────────────────────────────
+setInterval(trimGroupMessagesFile, 60 * 60 * 1000);
+
+// ── Watchdog: reset stuck agents after 8 minutes ─────────────────────────────
 setInterval(() => {
   const now = Date.now();
   for (const [, a] of Object.entries(state.agents)) {
     if (a.status === 'working' && a._startedAt && (now - a._startedAt) > 8 * 60 * 1000) {
       a.status = 'blocked';
-      a.latestLog = '⏱ Timed out (8 min)';
+      a.latestLog = 'Timed out (8 min)';
       broadcast();
     }
   }

@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { state, groupSseClients, pushGroupMsg } from '../state.js';
+import { state, pushGroupMsg, enqueueAgentTask } from '../state.js';
+import { eventBus } from '../event-bus.js';
 import { runClaw, runDeep, createThread, runAgentInThread, resumeThread } from '../agents.js';
 import { orchestrate } from '../orchestration.js';
 import { listThreads } from '../memory.js';
@@ -13,6 +14,15 @@ router.get('/group', (req, res) => {
   res.json({ messages: msgs, total: state.groupMessages.length });
 });
 
+// GET /api/group/events — EventBus history (for debugging / audit)
+router.get('/group/events', (req, res) => {
+  const since = req.query.since ? parseInt(req.query.since) : 0;
+  const type = req.query.type || null;
+  let events = eventBus.getHistory(since);
+  if (type) events = events.filter(e => e.type === type);
+  res.json({ events, total: eventBus.history.length });
+});
+
 // GET /api/group/stream
 router.get('/group/stream', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
@@ -21,8 +31,12 @@ router.get('/group/stream', (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
-  groupSseClients.add(res);
-  req.on('close', () => groupSseClients.delete(res));
+  // Each SSE connection subscribes to all events from EventBus
+  const unsubscribe = eventBus.on('*', (event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  });
+
+  req.on('close', unsubscribe);
 });
 
 // GET /api/group/threads — list saved threads
@@ -69,6 +83,7 @@ router.post('/group/send', (req, res) => {
   const agent = target || (uniqueMentions.length === 1 ? uniqueMentions[0] : null);
 
   if (agent === 'Claw' || agent === 'Deep') {
+    const agentState = state.agents[agent];
     const taskId = `task-${++state.taskCounter}-${Date.now()}`;
     state.tasks[taskId] = {
       id: taskId, agent, description: prompt, by: 'User',
@@ -76,8 +91,26 @@ router.post('/group/send', (req, res) => {
       delegatedBy: null, parentTaskId: null, source: 'group',
       createdAt: new Date().toISOString(), attachments: attachments || [],
     };
-    if (agent === 'Claw') runClaw(taskId, prompt);
-    else runDeep(taskId, prompt);
+
+    const runTask = () => {
+      state.tasks[taskId].status = 'working';
+      if (agent === 'Claw') runClaw(taskId, prompt);
+      else runDeep(taskId, prompt);
+    };
+
+    // If agent is busy, queue the task and immediately send status
+    if (agentState.status === 'working') {
+      state.tasks[taskId].status = 'queued';
+      const currentLog = agentState.latestLog?.slice(0, 80) || '...';
+      pushGroupMsg('status', agent,
+        `收到，排队中。当前正在执行：${currentLog}`,
+        { status: 'queued', taskId }
+      );
+      enqueueAgentTask(agent, runTask, { taskId, agent, description: prompt, createdAt: new Date().toISOString() });
+    } else {
+      runTask();
+    }
+
     return res.json({ ok: true, taskId });
   }
 

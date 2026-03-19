@@ -1,6 +1,17 @@
-import { state, broadcast, broadcastGroup, pushGroupMsg } from './state.js';
-import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, loadLongTermMemory, appendInbox, readInbox, clearInbox, saveThread } from './memory.js';
+import { state, broadcast, broadcastGroup, pushGroupMsg, dequeueAgentTask, enqueueAgentTask } from './state.js';
+import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, loadLongTermMemory, appendLongTermMemory, appendInbox, readInbox, clearInbox, saveThread } from './memory.js';
 import { streamChat } from './claude-proxy.js';
+import { parseToolCalls, executeToolCalls, TOOL_PROTOCOL } from './tools.js';
+import { WORKSPACES_DIR } from './config.js';
+import fs from 'fs';
+import path from 'path';
+
+// Get or create a per-task workspace directory
+function getWorkspace(taskId) {
+  const ws = path.join(WORKSPACES_DIR, taskId);
+  fs.mkdirSync(ws, { recursive: true });
+  return ws;
+}
 
 // Messaging protocol injected into every group-task system prompt
 const GROUP_MESSAGING_PROTOCOL = `
@@ -32,6 +43,21 @@ export function getPersona(agentName) {
 // For backward compatibility
 export const PERSONAS = DEFAULT_PERSONAS;
 
+/**
+ * scheduleAgent — single entry point for running Claw or Deep.
+ * If the agent is already working, the task is queued instead of starting immediately.
+ * All internal call sites (checkDelegation, checkGroupMessages, orchestration) use this.
+ */
+export function scheduleAgent(agentName, taskId, description) {
+  const agentState = state.agents[agentName];
+  const run = () => agentName === 'Claw' ? runClaw(taskId, description) : runDeep(taskId, description);
+  if (agentState.status === 'working') {
+    enqueueAgentTask(agentName, run, { taskId, agent: agentName, description, createdAt: new Date().toISOString() });
+  } else {
+    run();
+  }
+}
+
 export function checkDelegation(response, fromAgent, taskId, originalDesc) {
   const match = response.match(/^\[DELEGATE:(Claw|Deep)\]\n?([\s\S]*)/);
   if (!match) return false;
@@ -61,8 +87,7 @@ export function checkDelegation(response, fromAgent, taskId, originalDesc) {
     createdAt: new Date().toISOString(),
   };
 
-  if (toAgent === 'Claw') runClaw(subTaskId, delegateDesc);
-  else runDeep(subTaskId, delegateDesc);
+  scheduleAgent(toAgent, subTaskId, delegateDesc);
   return true;
 }
 
@@ -100,8 +125,7 @@ export function checkGroupMessages(response, fromAgent, taskId) {
         attachments: parentTask?.attachments || [],
         createdAt: new Date().toISOString(),
       };
-      if (toTarget === 'Claw') runClaw(subTaskId, msgContent);
-      else runDeep(subTaskId, msgContent);
+      scheduleAgent(toTarget, subTaskId, msgContent);
     }
   }
   return found;
@@ -134,35 +158,55 @@ export async function runClaw(taskId, description) {
     ? 'SHARED CONTEXT:\n' + pad.entries.map(e => `${e.key}: ${e.value}`).join('\n') + '\n\n'
     : '';
 
-  // Build system prompt: soul + long-term memory + shared context + group messaging protocol
+  // Build system prompt: soul + long-term memory + shared context + tool protocol + group messaging protocol
   const soul = getPersona('Claw');
   const longTermMem = loadLongTermMemory('Claw');
   let systemPrompt = soul;
   if (longTermMem) systemPrompt += '\n\n## Long-term Memory\n' + longTermMem;
   if (scratchText) systemPrompt += '\n\n' + scratchText;
+  systemPrompt += TOOL_PROTOCOL;
   if (isGroupTask) systemPrompt += GROUP_MESSAGING_PROTOCOL;
 
   appendMemory('Claw', 'user', description);
 
   const clawPrompt = `[NEW TASK — focus only on this request, ignore previous conversation history if unrelated]\n\n${description}`;
+  const workspace = getWorkspace(taskId);
 
   try {
     let result = '';
-    await streamChat({
-      agentName: 'Claw',
-      system: systemPrompt,
-      userMessage: clawPrompt,
-      onDelta: (_delta, accumulated) => {
-        result = accumulated;
-        agent.latestLog = result.slice(-800);
-        if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
-        if (streamMsg) {
-          streamMsg.content = result;
-          broadcastGroup({ ...streamMsg, partial: true });
-        }
-        broadcast();
-      },
-    });
+    let currentPrompt = clawPrompt;
+    const MAX_TOOL_ITERS = 10;
+
+    // Tool calling loop: run → parse tools → inject results → repeat
+    for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
+      result = '';
+      await streamChat({
+        agentName: 'Claw',
+        system: systemPrompt,
+        userMessage: currentPrompt,
+        onDelta: (_delta, accumulated) => {
+          result = accumulated;
+          agent.latestLog = result.slice(-800);
+          if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
+          if (streamMsg) {
+            streamMsg.content = result;
+            broadcastGroup({ ...streamMsg, partial: true });
+          }
+          broadcast();
+        },
+      });
+
+      const toolCalls = parseToolCalls(result);
+      if (toolCalls.length === 0) break; // no tools → done
+
+      // Show tool execution status in group chat
+      if (streamMsg) {
+        pushGroupMsg('tool-call', 'Claw', `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId });
+      }
+
+      const toolResults = await executeToolCalls(toolCalls, workspace);
+      currentPrompt = toolResults; // inject results as next user message (claude CLI continues session)
+    }
 
     const isDelegated = checkDelegation(result, 'Claw', taskId, description);
     if (!isDelegated && isGroupTask) checkGroupMessages(result, 'Claw', taskId);
@@ -191,6 +235,9 @@ export async function runClaw(taskId, description) {
     }
     if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
     broadcast();
+  } finally {
+    // Run next queued task if any
+    dequeueAgentTask('Claw');
   }
 }
 
@@ -219,57 +266,71 @@ export async function runDeep(taskId, description) {
 
   const deepPrompt = `[NEW TASK — focus only on this request, ignore previous conversation history if unrelated]\n\n${description}`;
 
-  // Build system prompt: soul + long-term memory + shared context + group messaging protocol
+  // Build system prompt: soul + long-term memory + shared context + tool protocol + group messaging protocol
   const deepSoul = getPersona('Deep');
   const deepLongTermMem = loadLongTermMemory('Deep');
   const deepPad = loadScratchpad();
   let deepSystemContent = deepSoul;
   if (deepLongTermMem) deepSystemContent += '\n\n## Long-term Memory\n' + deepLongTermMem;
   if (deepPad.entries.length) deepSystemContent += '\n\nSHARED CONTEXT:\n' + deepPad.entries.map(e => `${e.key}: ${e.value}`).join('\n');
+  deepSystemContent += TOOL_PROTOCOL;
   if (isGroupTask) deepSystemContent += GROUP_MESSAGING_PROTOCOL;
 
-  try {
-    const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+  const workspace = getWorkspace(taskId);
+
+  // Helper: run one DeepSeek streaming turn
+  async function deepTurn(messages) {
+    const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer sk-b24861db17d640bba4ffb816c8863f34',
-      },
-      body: JSON.stringify({
-        model: 'deepseek-chat',
-        messages: [
-          { role: 'system', content: deepSystemContent },
-          ...historyMessages,
-          { role: 'user', content: deepPrompt },
-        ],
-        stream: true,
-      }),
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk-b24861db17d640bba4ffb816c8863f34' },
+      body: JSON.stringify({ model: 'deepseek-chat', messages, stream: true }),
     });
-
-    if (!response.ok) throw new Error(`DeepSeek API error: ${response.status}`);
-
-    let result = '';
-    const reader = response.body.getReader();
+    if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);
+    let out = '';
+    const reader = res.body.getReader();
     const decoder = new TextDecoder();
-
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      const lines = decoder.decode(value).split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]');
-      for (const line of lines) {
+      for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')) {
         try {
-          const d = JSON.parse(line.slice(6));
-          const delta = d.choices?.[0]?.delta?.content || '';
-          result += delta;
-          agent.latestLog = result.slice(-800);
+          const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content || '';
+          out += delta;
+          agent.latestLog = out.slice(-800);
           if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
           if (deepStreamMsg) {
-            deepStreamMsg.content = result;
+            deepStreamMsg.content = out;
             broadcastGroup({ ...deepStreamMsg, partial: true });
           }
           broadcast();
         } catch {}
       }
+    }
+    return out;
+  }
+
+  try {
+    // Tool calling loop
+    const messages = [
+      { role: 'system', content: deepSystemContent },
+      ...historyMessages,
+      { role: 'user', content: deepPrompt },
+    ];
+    let result = '';
+    const MAX_TOOL_ITERS = 10;
+
+    for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
+      result = await deepTurn(messages);
+      const toolCalls = parseToolCalls(result);
+      if (toolCalls.length === 0) break;
+
+      if (deepStreamMsg) {
+        pushGroupMsg('tool-call', 'Deep', `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId });
+      }
+
+      const toolResults = await executeToolCalls(toolCalls, workspace);
+      messages.push({ role: 'assistant', content: result });
+      messages.push({ role: 'user', content: toolResults });
     }
 
     const isDelegated = checkDelegation(result, 'Deep', taskId, description);
@@ -299,6 +360,9 @@ export async function runDeep(taskId, description) {
     }
     if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
     broadcast();
+  } finally {
+    // Run next queued task if any
+    dequeueAgentTask('Deep');
   }
 }
 
@@ -338,6 +402,30 @@ function parseNextDirective(text, thread, currentAgent) {
     if (other) return { type: 'next', targets: [other] };
   }
   return { type: 'user' }; // only pause if single-agent thread
+}
+
+// Save thread summary to each participant's long-term memory
+function saveThreadToAgentMemory(thread) {
+  const date = thread.startedAt.slice(0, 10);
+  const turnCount = thread.messages.filter(m => thread.participants.includes(m.from)).length;
+
+  for (const agentName of thread.participants) {
+    // Build a compact transcript from this agent's perspective
+    const lines = thread.messages.map(m => {
+      const label = m.from === agentName ? `[Me]` : `[${m.from}]`;
+      return `${label} ${m.content.slice(0, 300)}${m.content.length > 300 ? '...' : ''}`;
+    });
+
+    const summary = [
+      `Topic: ${thread.topic}`,
+      `Participants: ${[...thread.participants, 'User'].join(', ')}`,
+      `Turns: ${turnCount} | Ended: ${thread.endReason}`,
+      ``,
+      ...lines,
+    ].join('\n');
+
+    appendLongTermMemory(agentName, `Thread Discussion (${date})\n${summary}`);
+  }
 }
 
 // Create a new Thread
@@ -396,53 +484,77 @@ export async function runAgentInThread(agentName, threadId) {
   let system = soul;
   if (longTermMem) system += '\n\n## Long-term Memory\n' + longTermMem;
   if (pad.entries.length) system += '\n\nSHARED CONTEXT:\n' + pad.entries.map(e => `${e.key}: ${e.value}`).join('\n');
+  system += TOOL_PROTOCOL;
   system += NEXT_PROTOCOL;
 
   const userMsg = buildThreadContext(thread, agentName);
+  const workspace = getWorkspace(threadId);
+
+  // Helper: one DeepSeek streaming turn for thread
+  async function threadDeepTurn(messages) {
+    const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk-b24861db17d640bba4ffb816c8863f34' },
+      body: JSON.stringify({ model: 'deepseek-chat', messages, stream: true }),
+    });
+    if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);
+    let out = '';
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')) {
+        try {
+          const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content || '';
+          out += delta;
+          agent.latestLog = out.slice(-800);
+          streamMsg.content = out;
+          broadcastGroup({ ...streamMsg, partial: true });
+          broadcast();
+        } catch {}
+      }
+    }
+    return out;
+  }
 
   try {
     let result = '';
+    const MAX_TOOL_ITERS = 10;
 
     if (agentName === 'Claw') {
-      await streamChat({
-        agentName: 'Claw',
-        system,
-        userMessage: userMsg,
-        onDelta: (_, accumulated) => {
-          result = accumulated;
-          agent.latestLog = result.slice(-800);
-          streamMsg.content = result;
-          broadcastGroup({ ...streamMsg, partial: true });
-          broadcast();
-        },
-      });
-    } else {
-      // DeepSeek (Deep and any future non-Claude agent)
-      const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk-b24861db17d640bba4ffb816c8863f34' },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [{ role: 'system', content: system }, { role: 'user', content: userMsg }],
-          stream: true,
-        }),
-      });
-      if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')) {
-          try {
-            const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content || '';
-            result += delta;
+      let currentPrompt = userMsg;
+      for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
+        result = '';
+        await streamChat({
+          agentName: 'Claw',
+          system,
+          userMessage: currentPrompt,
+          onDelta: (_, accumulated) => {
+            result = accumulated;
             agent.latestLog = result.slice(-800);
             streamMsg.content = result;
             broadcastGroup({ ...streamMsg, partial: true });
             broadcast();
-          } catch {}
-        }
+          },
+        });
+        const toolCalls = parseToolCalls(result);
+        if (toolCalls.length === 0) break;
+        pushGroupMsg('tool-call', 'Claw', `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId });
+        const toolResults = await executeToolCalls(toolCalls, workspace);
+        currentPrompt = toolResults;
+      }
+    } else {
+      // DeepSeek (Deep and any future non-Claude agent)
+      const messages = [{ role: 'system', content: system }, { role: 'user', content: userMsg }];
+      for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
+        result = await threadDeepTurn(messages);
+        const toolCalls = parseToolCalls(result);
+        if (toolCalls.length === 0) break;
+        pushGroupMsg('tool-call', 'Deep', `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId });
+        const toolResults = await executeToolCalls(toolCalls, workspace);
+        messages.push({ role: 'assistant', content: result });
+        messages.push({ role: 'user', content: toolResults });
       }
     }
 
@@ -465,6 +577,7 @@ export async function runAgentInThread(agentName, threadId) {
       thread.endedAt = new Date().toISOString();
       thread.endReason = directive.type === 'done' ? 'agent-done' : 'max-turns';
       saveThread(thread);
+      saveThreadToAgentMemory(thread);
       pushGroupMsg('thread-end', agentName, '', { threadId, endReason: thread.endReason });
     } else if (directive.type === 'user') {
       thread.status = 'paused';
