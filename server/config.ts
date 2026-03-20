@@ -21,6 +21,7 @@ export const LONG_TERM_DIR = path.join(DATA_DIR, 'memory', 'long-term');
 export const INBOX_DIR = path.join(DATA_DIR, 'inboxes');
 export const THREADS_DIR = path.join(DATA_DIR, 'threads');
 export const WORKSPACES_DIR = path.join(DATA_DIR, 'workspaces');
+export const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
 
 [DATA_DIR, MEMORY_DIR, LOGS_DIR, UPLOADS_DIR, SOULS_DIR, LONG_TERM_DIR, INBOX_DIR, THREADS_DIR, WORKSPACES_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
 

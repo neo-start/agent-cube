@@ -18,6 +18,7 @@ import orchestrateRouter from './routes/orchestrate.js';
 import scratchpadRouter from './routes/scratchpad.js';
 import uploadRouter from './routes/upload.js';
 import tokensRouter from './routes/tokens.js';
+import projectsRouter from './routes/projects.js';
 
 // ── Restore queued tasks from disk on startup ─────────────────────────────────
 (async function restoreQueues() {
@@ -66,6 +67,7 @@ app.use('/api', orchestrateRouter);
 app.use('/api', scratchpadRouter);
 app.use('/api', uploadRouter);
 app.use('/api', tokensRouter);
+app.use('/api/projects', projectsRouter);
 
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use(express.static(join(__dirname, '..', 'dist')));

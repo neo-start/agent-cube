@@ -18,6 +18,41 @@ function getWorkspace(taskId: string): string {
   return ws;
 }
 
+// Snapshot file mtimes in a workspace directory (for change detection)
+function snapshotWorkspace(dir: string): Record<string, number> {
+  const snapshot: Record<string, number> = {};
+  if (!fs.existsSync(dir)) return snapshot;
+  try {
+    const walk = (d: string) => {
+      for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+        const full = path.join(d, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name !== 'node_modules' && !entry.name.startsWith('.')) walk(full);
+        } else {
+          snapshot[path.relative(dir, full)] = fs.statSync(full).mtimeMs;
+        }
+      }
+    };
+    walk(dir);
+  } catch {}
+  return snapshot;
+}
+
+// Diff two snapshots, return human-readable change lines
+function diffSnapshots(before: Record<string, number>, after: Record<string, number>): string[] {
+  const changes: string[] = [];
+  for (const [file, mtime] of Object.entries(after)) {
+    if (!(file in before)) changes.push(`+ ${file}`);
+    else if (before[file] !== mtime) changes.push(`M ${file}`);
+  }
+  for (const file of Object.keys(before)) {
+    if (!(file in after)) changes.push(`- ${file}`);
+  }
+  return changes;
+}
+
+const SUMMARIZE_EVERY = 6; // summarize after every N new messages since last summary
+
 // Messaging protocol injected into every group-task system prompt
 const GROUP_MESSAGING_PROTOCOL = `
 ## Group Chat Messaging Protocol
@@ -182,7 +217,7 @@ async function runAgent(agentName: string, taskId: string, description: string):
     if (streamMsg) {
       streamMsg.type = 'reply';
       streamMsg.content = result;
-      streamMsg['status'] = 'done';
+      streamMsg.status = 'done';
       getGroupBus(groupId).emit(streamMsg);
     }
     logTask(taskId, { ...state.tasks[taskId], completedAt: new Date().toISOString() });
@@ -193,7 +228,7 @@ async function runAgent(agentName: string, taskId: string, description: string):
     if (streamMsg) {
       streamMsg.type = 'reply';
       streamMsg.content = `Error: ${(err as Error).message}`;
-      streamMsg['status'] = 'error';
+      streamMsg.status = 'error';
       getGroupBus(groupId).emit(streamMsg);
     }
     if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
@@ -353,7 +388,7 @@ function saveThreadToAgentMemory(thread: Thread): void {
 }
 
 // Create a new Thread
-export function createThread(participants: string[], firstMessage: string, fromUser = 'User', groupId = 'default'): Thread {
+export function createThread(participants: string[], firstMessage: string, fromUser = 'User', groupId = 'default', projectId?: string): Thread {
   const threadId = `thread-${++state.threadCounter}-${Date.now()}`;
   const thread: Thread = {
     id: threadId,
@@ -366,6 +401,7 @@ export function createThread(participants: string[], firstMessage: string, fromU
     startedAt: new Date().toISOString(),
     endedAt: null,
     endReason: null,
+    ...(projectId ? { projectId } : {}),
   };
   state.threads[threadId] = thread;
   return thread;
@@ -373,10 +409,22 @@ export function createThread(participants: string[], firstMessage: string, fromU
 
 // Build context prompt for an agent's turn
 function buildThreadContext(thread: Thread, agentName: string): string {
-  const history = thread.messages
-    .map(m => `${m.from}: ${m.content}`)
-    .join('\n\n---\n\n');
-  return `You are in an ongoing multi-agent discussion.\nParticipants: ${[...thread.participants, 'User'].join(', ')}\n\nConversation so far:\n${history}\n\nNow it's your turn (${agentName}).`;
+  const RECENT_KEEP = 6;
+  let historyStr: string;
+  if (thread.summary && thread.messages.length > RECENT_KEEP) {
+    const recent = thread.messages.slice(-RECENT_KEEP);
+    const recentStr = recent.map(m => `${m.from}: ${m.content}`).join('\n\n---\n\n');
+    historyStr = `[Earlier discussion summary]\n${thread.summary}\n\n[Recent messages]\n${recentStr}`;
+  } else {
+    historyStr = thread.messages.map(m => `${m.from}: ${m.content}`).join('\n\n---\n\n');
+  }
+
+  let changesSection = '';
+  if (thread.lastChanges && thread.lastChanges.length > 0) {
+    changesSection = `\n\n[Files changed in previous turn]\n${thread.lastChanges.join('\n')}`;
+  }
+
+  return `You are in an ongoing multi-agent discussion.\nParticipants: ${[...thread.participants, 'User'].join(', ')}\n\nConversation so far:\n${historyStr}${changesSection}\n\nNow it's your turn (${agentName}).`;
 }
 
 // Run one turn for an agent inside a Thread
@@ -404,6 +452,15 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
   pushGroupMsg('status', agentName, 'Thinking...', { status: 'working', threadId });
   const streamMsg = pushGroupMsg('stream', agentName, '', { threadId, status: 'streaming' });
 
+  // Resolve workspace: use project directory if bound, otherwise per-thread workspace
+  const workspace = (thread.projectId && state.projects[thread.projectId]?.directory)
+    ? state.projects[thread.projectId].directory
+    : getWorkspace(threadId);
+  fs.mkdirSync(workspace, { recursive: true });
+
+  // Snapshot files before this turn (use persisted snapshot as baseline)
+  const beforeSnapshot = thread.fileSnapshot ?? snapshotWorkspace(workspace);
+
   // Build system prompt
   const soul = getPersona(agentName);
   const relevantMem = retrieveRelevantMemory(agentName, thread.topic);
@@ -415,7 +472,6 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
   system += NEXT_PROTOCOL;
 
   const userMsg = buildThreadContext(thread, agentName);
-  const workspace = getWorkspace(threadId);
 
   const agentConfig = getAgentConfig(agentName);
   if (!agentConfig) {
@@ -477,9 +533,34 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
     // Append to thread history
     thread.messages.push({ from: agentName, content: result, timestamp: new Date().toISOString() });
 
+    // ── File change detection ────────────────────────────────────────────────
+    const afterSnapshot = snapshotWorkspace(workspace);
+    const fileChanges = diffSnapshots(beforeSnapshot, afterSnapshot);
+    thread.lastChanges = fileChanges.length > 0 ? fileChanges : undefined;
+    thread.fileSnapshot = afterSnapshot;
+    if (fileChanges.length > 0) {
+      pushGroupMsg('file-changes', agentName, fileChanges.join('\n'), { threadId, groupId: threadGroupId });
+    }
+
+    // ── History summarization ────────────────────────────────────────────────
+    const msgsSinceSummary = thread.messages.length - (thread.summaryTurnCount ?? 0);
+    if (msgsSinceSummary >= SUMMARIZE_EVERY) {
+      const keepRecent = 3;
+      const toSummarize = thread.messages.slice(thread.summaryTurnCount ?? 0, -keepRecent);
+      if (toSummarize.length >= 3) {
+        try {
+          const summaryPrompt = `Summarize this multi-agent discussion concisely. Preserve key decisions, code produced, file changes, and open action items.\n\n${toSummarize.map(m => `${m.from}: ${m.content.slice(0, 600)}`).join('\n---\n')}`;
+          const summaryOut = await provider.streamProvider(agentName, 'You are a concise technical summarizer. Output only the summary.', summaryPrompt, () => {});
+          const prevSummary = thread.summary ? `${thread.summary}\n\n` : '';
+          thread.summary = prevSummary + summaryOut.result.trim();
+          thread.summaryTurnCount = thread.messages.length - keepRecent;
+        } catch { /* summarization is best-effort */ }
+      }
+    }
+
     streamMsg.type = 'reply';
     streamMsg.content = result;
-    streamMsg['status'] = 'done';
+    streamMsg.status = 'done';
     getGroupBus(threadGroupId).emit(streamMsg);
 
     agent.status = 'idle';
@@ -510,7 +591,7 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
     agent.latestLog = `Error: ${(err as Error).message}`;
     streamMsg.type = 'reply';
     streamMsg.content = `Error: ${(err as Error).message}`;
-    streamMsg['status'] = 'error';
+    streamMsg.status = 'error';
     getGroupBus(threadGroupId).emit(streamMsg);
     broadcast();
   }

@@ -52,6 +52,23 @@ export interface Thread {
   startedAt: string;
   endedAt: string | null;
   endReason: string | null;
+  // Project persistence
+  projectId?: string;
+  // History summarization: compressed older messages
+  summary?: string;
+  summaryTurnCount?: number;
+  // File change tracking: snapshot after last agent turn
+  fileSnapshot?: Record<string, number>;
+  lastChanges?: string[];
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  directory: string;
+  groupId?: string;
+  description?: string;
+  createdAt: string;
 }
 
 export interface AgentConfig {
@@ -112,6 +129,7 @@ export interface AppState {
   orchestrations: Record<string, Orchestration>;
   threads: Record<string, Thread>;
   threadCounter: number;
+  projects: Record<string, Project>;
 }
 
 export interface DirectMessage {

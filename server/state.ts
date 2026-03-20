@@ -1,9 +1,9 @@
-import { appendGroupMessageForGroup, loadGroupMessagesForGroup, trimGroupMessagesFileForGroup, migrateGroupMessages, saveQueuedTasks, loadTasksState, saveTasksState } from './memory.js';
+import { appendGroupMessageForGroup, loadGroupMessagesForGroup, trimGroupMessagesFileForGroup, migrateGroupMessages, saveQueuedTasks, loadTasksState, saveTasksState, loadProjects } from './memory.js';
 import { loadAgentRegistry } from './registry.js';
 import { loadGroupRegistry } from './group-registry.js';
 import { getGroupBus } from './group-bus.js';
 import { AgentTaskQueue } from './agent-queue.js';
-import type { AppState, AgentState, GroupMessage } from './types.js';
+import type { AppState, AgentState, GroupMessage, Project } from './types.js';
 export { saveTasksState };
 
 // ── Migrate old group-messages.jsonl on startup ───────────────────────────────
@@ -39,10 +39,9 @@ export const state: AppState = {
   groupMessages: _groupMessagesMap,  // { [groupId]: [...] }
   taskCounter: _restoredTaskCounter,
   orchestrations: {},
-  // Thread-based multi-agent conversations
-  // Initialize threadCounter from current timestamp (seconds) so IDs never collide across restarts
   threads: {},
   threadCounter: Math.floor(Date.now() / 1000),
+  projects: loadProjects() as Record<string, Project>,
 };
 
 // ── Legacy SSE clients (agent status panel) ───────────────────────────────────

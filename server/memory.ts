@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { MEMORY_DIR, LOGS_DIR, SCRATCHPAD_FILE, SOULS_DIR, LONG_TERM_DIR, INBOX_DIR, THREADS_DIR, DATA_DIR } from './config.js';
-import type { Task, Thread, MemoryEntry, Scratchpad, GroupMessage } from './types.js';
+import { MEMORY_DIR, LOGS_DIR, SCRATCHPAD_FILE, SOULS_DIR, LONG_TERM_DIR, INBOX_DIR, THREADS_DIR, DATA_DIR, PROJECTS_FILE } from './config.js';
+import type { Task, Thread, MemoryEntry, Scratchpad, GroupMessage, Project } from './types.js';
 
 const GROUP_MESSAGES_FILE = path.join(DATA_DIR, 'group-messages.jsonl');
 const GROUPS_DIR = path.join(DATA_DIR, 'groups');
@@ -242,4 +242,19 @@ export function listThreads(): Thread[] {
       .filter((x): x is Thread => x !== null)
       .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
   } catch { return []; }
+}
+
+// ── Project persistence ────────────────────────────────────────────────────────
+
+export function loadProjects(): Record<string, Project> {
+  try {
+    if (!fs.existsSync(PROJECTS_FILE)) return {};
+    return JSON.parse(fs.readFileSync(PROJECTS_FILE, 'utf-8')) as Record<string, Project>;
+  } catch { return {}; }
+}
+
+export function saveProjects(projects: Record<string, Project>): void {
+  try {
+    fs.writeFileSync(PROJECTS_FILE, JSON.stringify(projects, null, 2), 'utf-8');
+  } catch {}
 }
