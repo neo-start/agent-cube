@@ -1,6 +1,6 @@
 import { state, broadcast, pushGroupMsg, dequeueAgentTask, persistQueues, agentTaskQueues, saveTasksState } from './state.js';
 import { getGroupBus } from './group-bus.js';
-import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, appendLongTermMemory, appendInbox, readInbox, clearInbox, saveThread } from './memory.js';
+import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, appendLongTermMemory, appendInbox, readInbox, clearInbox, saveThread, appendGroupMessageForGroup } from './memory.js';
 import { parseToolCalls, executeToolCalls, TOOL_PROTOCOL } from './tools.js';
 import { WORKSPACES_DIR } from './config.js';
 import { getAgentConfig, getAllAgentNames } from './registry.js';
@@ -587,6 +587,10 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
     streamMsg.content = result;
     streamMsg.status = 'done';
     getGroupBus(threadGroupId).emit(streamMsg);
+    // Persist the completed reply so it survives server restarts
+    if (!state.groupMessages[threadGroupId]) state.groupMessages[threadGroupId] = [];
+    state.groupMessages[threadGroupId].push(streamMsg as import('./types.js').GroupMessage);
+    appendGroupMessageForGroup(threadGroupId, streamMsg as import('./types.js').GroupMessage);
 
     agent.status = 'idle';
     broadcast();
@@ -621,6 +625,9 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
     streamMsg.content = `Error: ${(err as Error).message}`;
     streamMsg.status = 'error';
     getGroupBus(threadGroupId).emit(streamMsg);
+    if (!state.groupMessages[threadGroupId]) state.groupMessages[threadGroupId] = [];
+    state.groupMessages[threadGroupId].push(streamMsg as import('./types.js').GroupMessage);
+    appendGroupMessageForGroup(threadGroupId, streamMsg as import('./types.js').GroupMessage);
     broadcast();
   }
 }
