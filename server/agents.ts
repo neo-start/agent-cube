@@ -445,9 +445,9 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
         if (out.usage) lastUsage = out.usage;
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
-        pushGroupMsg('tool-call', agentName, `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId });
+        pushGroupMsg('tool-call', agentName, `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId, groupId: threadGroupId });
         const toolResults = await executeToolCalls(toolCalls, workspace);
-        pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { threadId });
+        pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { threadId, groupId: threadGroupId });
         currentPrompt = toolResults;
       }
     } else {
@@ -465,9 +465,9 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
         if (out.usage) lastUsage = out.usage;
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
-        pushGroupMsg('tool-call', agentName, `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId });
+        pushGroupMsg('tool-call', agentName, `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId, groupId: threadGroupId });
         const toolResults = await executeToolCalls(toolCalls, workspace);
-        pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { threadId });
+        pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { threadId, groupId: threadGroupId });
         messages.push({ role: 'assistant', content: result });
         messages.push({ role: 'user', content: toolResults });
       }

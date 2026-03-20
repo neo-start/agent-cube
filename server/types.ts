@@ -1,4 +1,7 @@
 export type AgentStatus = 'idle' | 'working' | 'done' | 'blocked';
+export type TaskStatus = 'queued' | 'working' | 'done' | 'blocked' | 'cancelled' | 'cancellation-requested';
+export type ThreadStatus = 'active' | 'paused' | 'done';
+export type OrchestrationStatus = 'routing' | 'working' | 'merging' | 'done' | 'blocked';
 
 export interface AgentState {
   status: AgentStatus;
@@ -14,7 +17,7 @@ export interface Task {
   agent: string;
   description: string;
   by: string;
-  status: string;
+  status: TaskStatus;
   latestLog: string | null;
   result: string | null;
   delegatedBy: string | null;
@@ -44,7 +47,7 @@ export interface Thread {
   topic: string;
   participants: string[];
   messages: ThreadMessage[];
-  status: string;
+  status: ThreadStatus;
   maxTurns: number;
   startedAt: string;
   endedAt: string | null;
@@ -72,14 +75,24 @@ export interface GroupMessage {
   from: string;
   content: string;
   timestamp: string;
-  [key: string]: unknown;
+  // Optional metadata fields emitted via pushGroupMsg
+  groupId?: string;
+  threadId?: string;
+  taskId?: string;
+  status?: string;
+  partial?: boolean;
+  target?: string | null;
+  attachments?: Attachment[];
+  toAgent?: string;
+  participants?: string[];
+  endReason?: string;
 }
 
 export interface Orchestration {
   id: string;
   description: string;
   by: string;
-  status: string;
+  status: OrchestrationStatus;
   route: string | null;
   reason: string | null;
   clawTaskId: string | null;
@@ -88,7 +101,6 @@ export interface Orchestration {
   deepResult: string | null;
   merged: string | null;
   createdAt: string;
-  [key: string]: unknown;
 }
 
 export interface AppState {

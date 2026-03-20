@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"tsx watch server/index.ts\" \"vite\"",
-    "build": "tsc -p server/tsconfig.json && tsc && vite build",
+    "build": "tsc -p server/tsconfig.json --noEmit && tsc && vite build",
     "start": "tsx server/index.ts"
   },
   "dependencies": {

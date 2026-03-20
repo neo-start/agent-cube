@@ -3,16 +3,17 @@ import { scheduleAgent, PERSONAS } from './agents.js';
 import { DEEPSEEK_API_KEY } from './config.js';
 import { loadAgentRegistry } from './registry.js';
 
-export function watchSingleTask(orchestrationId: string, taskId: string, resultKey: string): void {
+export function watchSingleTask(orchestrationId: string, taskId: string, resultKey: 'clawResult' | 'deepResult'): void {
   const iv = setInterval(() => {
     const task = state.tasks[taskId];
     if (!task) return;
     if (task.status === 'done' || task.status === 'blocked') {
       clearInterval(iv);
-      state.orchestrations[orchestrationId][resultKey] = task.result;
-      state.orchestrations[orchestrationId]['merged'] = task.result;
-      state.orchestrations[orchestrationId]['status'] = task.status === 'done' ? 'done' : 'blocked';
-      state.agents['Orchestrator'].status = state.orchestrations[orchestrationId]['status'] as 'done' | 'blocked';
+      const orch = state.orchestrations[orchestrationId];
+      orch[resultKey] = task.result;
+      orch.merged = task.result;
+      orch.status = task.status === 'done' ? 'done' : 'blocked';
+      state.agents['Orchestrator'].status = orch.status;
       state.agents['Orchestrator'].latestLog = (task.result || 'Done').slice(-500);
       broadcast();
     }
@@ -23,10 +24,12 @@ async function watchBothTasks(orchestrationId: string, clawTaskId: string, deepT
   const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
   const startedAt = Date.now();
   const iv = setInterval(async () => {
+    const orch = state.orchestrations[orchestrationId];
+
     if (Date.now() - startedAt > TIMEOUT_MS) {
       clearInterval(iv);
-      state.orchestrations[orchestrationId]['status'] = 'blocked';
-      state.orchestrations[orchestrationId]['merged'] = 'Orchestration timed out';
+      orch.status = 'blocked';
+      orch.merged = 'Orchestration timed out';
       state.agents['Orchestrator'].status = 'blocked';
       state.agents['Orchestrator'].latestLog = 'Timed out waiting for both agents';
       broadcast();
@@ -40,12 +43,12 @@ async function watchBothTasks(orchestrationId: string, clawTaskId: string, deepT
     const clawDone = clawTask.status === 'done' || clawTask.status === 'blocked';
     const deepDone = deepTask.status === 'done' || deepTask.status === 'blocked';
 
-    if (clawDone) state.orchestrations[orchestrationId]['clawResult'] = clawTask.result;
-    if (deepDone) state.orchestrations[orchestrationId]['deepResult'] = deepTask.result;
+    if (clawDone) orch.clawResult = clawTask.result;
+    if (deepDone) orch.deepResult = deepTask.result;
 
     if (clawDone && deepDone) {
       clearInterval(iv);
-      state.orchestrations[orchestrationId]['status'] = 'merging';
+      orch.status = 'merging';
       state.agents['Orchestrator'].latestLog = 'Merging results...';
       broadcast();
 
@@ -65,20 +68,20 @@ async function watchBothTasks(orchestrationId: string, clawTaskId: string, deepT
             model: mergeModel,
             messages: [
               { role: 'system', content: mergePersona },
-              { role: 'user', content: `Merge these two responses into one cohesive answer:\nANALYSIS (from ${analystName}): ${state.orchestrations[orchestrationId]['deepResult'] || '(none)'}\nIMPLEMENTATION (from ${coderName}): ${state.orchestrations[orchestrationId]['clawResult'] || '(none)'}\nOriginal request: ${description}\nProvide a clean integrated response.` },
+              { role: 'user', content: `Merge these two responses into one cohesive answer:\nANALYSIS (from ${analystName}): ${orch.deepResult || '(none)'}\nIMPLEMENTATION (from ${coderName}): ${orch.clawResult || '(none)'}\nOriginal request: ${description}\nProvide a clean integrated response.` },
             ],
             stream: false,
           }),
         });
         const mergeData = await mergeRes.json() as { choices?: Array<{ message?: { content?: string } }> };
         const merged = mergeData.choices?.[0]?.message?.content || 'Merge failed';
-        state.orchestrations[orchestrationId]['merged'] = merged;
-        state.orchestrations[orchestrationId]['status'] = 'done';
+        orch.merged = merged;
+        orch.status = 'done';
         state.agents['Orchestrator'].status = 'done';
         state.agents['Orchestrator'].latestLog = merged.slice(-500);
       } catch (err) {
-        state.orchestrations[orchestrationId]['merged'] = `Merge error: ${(err as Error).message}`;
-        state.orchestrations[orchestrationId]['status'] = 'blocked';
+        orch.merged = `Merge error: ${(err as Error).message}`;
+        orch.status = 'blocked';
         state.agents['Orchestrator'].status = 'blocked';
         state.agents['Orchestrator'].latestLog = `Merge error: ${(err as Error).message}`;
       }
