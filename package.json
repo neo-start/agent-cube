@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"tsx watch server/index.ts\" \"vite\"",
+    "dev": "concurrently \"PORT=3021 tsx watch server/index.ts\" \"vite\"",
     "build": "tsc -p server/tsconfig.json --noEmit && tsc && vite build",
     "start": "tsx server/index.ts"
   },
