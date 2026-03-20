@@ -61,21 +61,3 @@ export interface Message {
   read: boolean;
 }
 
-export const AGENT_CONFIGS: AgentConfig[] = [
-  {
-    name: 'Forge',
-    color: '#1a6cf5',
-    accentColor: '#4d9fff',
-    role: 'Claude · Coder',
-    emoji: '🤖',
-    position: [2, 0, 0],
-  },
-  {
-    name: 'Sage',
-    color: '#7c3aed',
-    accentColor: '#a78bfa',
-    role: 'DeepSeek · Thinker',
-    emoji: '🧠',
-    position: [-2, 0, 0],
-  },
-];

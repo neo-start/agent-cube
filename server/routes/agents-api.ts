@@ -9,10 +9,40 @@ import { AgentTaskQueue } from '../agent-queue.js';
 const AGENTS_FILE = path.join(DATA_DIR, 'agents.json');
 const router = Router();
 
+const AGENT_PALETTE = [
+  { color: '#1a6cf5', accentColor: '#4d9fff' },
+  { color: '#7c3aed', accentColor: '#a78bfa' },
+  { color: '#059669', accentColor: '#34d399' },
+  { color: '#d97706', accentColor: '#fbbf24' },
+  { color: '#dc2626', accentColor: '#f87171' },
+  { color: '#0891b2', accentColor: '#22d3ee' },
+];
+
+function deriveRole(provider: string): string {
+  return provider
+    .replace(/-/g, ' ')
+    .split(' ')
+    .map(word => {
+      if (word.toLowerCase() === 'openai') return 'OpenAI';
+      if (word.toLowerCase() === 'deepseek') return 'DeepSeek';
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(' ');
+}
+
 // ── GET /api/agents ───────────────────────────────────────────────────────────
 router.get('/agents', (_req: Request, res: Response) => {
   const agents = loadAgentRegistry();
-  res.json({ agents });
+  const enriched = agents.map((agent, i) => {
+    const palette = AGENT_PALETTE[i % AGENT_PALETTE.length];
+    return {
+      ...agent,
+      color: palette.color,
+      accentColor: palette.accentColor,
+      role: deriveRole(agent.provider),
+    };
+  });
+  res.json({ agents: enriched });
 });
 
 // ── POST /api/agents ──────────────────────────────────────────────────────────

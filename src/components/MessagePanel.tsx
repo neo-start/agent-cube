@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { AGENT_CONFIGS, Message } from '../types';
-
-const ALL_SENDERS = ['User', ...AGENT_CONFIGS.map(a => a.name)];
+import { Message } from '../types';
+import { useAgentConfigs } from '../hooks/useAgentConfigs';
 
 export function MessagePanel() {
+  const { agentConfigs: AGENT_CONFIGS } = useAgentConfigs();
+  const ALL_SENDERS = ['User', ...AGENT_CONFIGS.map(a => a.name)];
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [from, setFrom] = useState('User');

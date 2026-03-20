@@ -5,7 +5,7 @@ import { CreateGroupModal } from './components/CreateGroupModal';
 import { TokenDashboard } from './components/TokenDashboard';
 import { useTasks } from './hooks/useTasks';
 import { useGroups } from './hooks/useGroups';
-import { AGENT_CONFIGS } from './types';
+import { useAgentConfigs } from './hooks/useAgentConfigs';
 
 const STATUS_COLORS: Record<string, string> = {
   idle: '#6b7280',
@@ -29,6 +29,7 @@ function StatusDot({ status }: { status: string }) {
 }
 
 export default function App() {
+  const { agentConfigs: AGENT_CONFIGS } = useAgentConfigs();
   const { agents, loading, error, lastUpdated } = useTasks(3000);
   const { groups, selectedGroupId, setSelectedGroupId, selectedGroup, createGroup } = useGroups();
   const [toast, setToast] = useState<{ text: string; color: string } | null>(null);

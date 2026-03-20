@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { AGENT_CONFIGS, UploadedFile } from '../types';
+import { UploadedFile } from '../types';
+import { useAgentConfigs } from '../hooks/useAgentConfigs';
 import { ChatModal } from './ChatModal';
 
 interface GroupMessage {
@@ -127,6 +128,7 @@ interface GroupChatProps {
 }
 
 export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default', groupAgents, groupName, onCreateGroup }: GroupChatProps) {
+  const { agentConfigs: AGENT_CONFIGS } = useAgentConfigs();
   const [internalOpen, setInternalOpen] = useState(false);
   const open = isOpen !== undefined ? isOpen : internalOpen;
   const setOpen = (v: boolean | ((prev: boolean) => boolean)) => {

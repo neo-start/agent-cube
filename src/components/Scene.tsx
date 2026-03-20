@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { AgentDesk } from './AgentDesk';
 import { IsometricOffice } from './IsometricOffice';
 import { ChatModal } from './ChatModal';
-import { AGENT_CONFIGS } from '../types';
+import { useAgentConfigs } from '../hooks/useAgentConfigs';
 import type { AgentData, AgentConfig } from '../types';
 
 interface Props {
@@ -53,6 +53,7 @@ function Floor({ dark }: { dark: boolean }) {
 }
 
 function CenterPiece() {
+  const { agentConfigs: AGENT_CONFIGS } = useAgentConfigs();
   const meshRef = useRef<THREE.Mesh>(null);
 
   useFrame((state) => {
@@ -112,6 +113,7 @@ function SceneLighting({ dark }: { dark: boolean }) {
 }
 
 export function Scene({ agents, onAssignTask, darkMode = true, onDeskClick }: Props) {
+  const { agentConfigs: AGENT_CONFIGS } = useAgentConfigs();
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
 
   const selectedConfig = selectedAgent ? AGENT_CONFIGS.find(a => a.name === selectedAgent) : null;

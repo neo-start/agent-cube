@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useAgentRegistry } from '../hooks/useAgentRegistry';
-import { AGENT_CONFIGS } from '../types';
+import { useAgentConfigs } from '../hooks/useAgentConfigs';
 
 interface CreateGroupModalProps {
   onClose: () => void;
@@ -8,6 +8,7 @@ interface CreateGroupModalProps {
 }
 
 export function CreateGroupModal({ onClose, onCreate }: CreateGroupModalProps) {
+  const { agentConfigs: AGENT_CONFIGS } = useAgentConfigs();
   const { agents: registryAgents } = useAgentRegistry();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');

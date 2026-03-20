@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { AGENT_CONFIGS } from '../types';
+import { useAgentConfigs } from '../hooks/useAgentConfigs';
 
 interface ActivityTask {
   id: string;
@@ -16,13 +16,6 @@ interface ActivityTask {
   completedAt: string | null;
 }
 
-const AGENT_COLOR: Record<string, string> = Object.fromEntries(
-  AGENT_CONFIGS.map(a => [a.name, a.accentColor])
-);
-const AGENT_EMOJI: Record<string, string> = Object.fromEntries(
-  AGENT_CONFIGS.map(a => [a.name, a.emoji])
-);
-
 const STATUS_COLOR: Record<string, string> = {
   working: '#22c55e',
   done: '#4d9fff',
@@ -37,14 +30,16 @@ function timeSince(iso: string) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function TaskCard({ task, depth, expanded, onToggle }: {
+function TaskCard({ task, depth, expanded, onToggle, agentColorMap, agentEmojiMap }: {
   task: ActivityTask;
   depth: number;
   expanded: boolean;
   onToggle: () => void;
+  agentColorMap: Record<string, string>;
+  agentEmojiMap: Record<string, string>;
 }) {
-  const color = AGENT_COLOR[task.agent] || '#6b7280';
-  const emoji = AGENT_EMOJI[task.agent] || '🤖';
+  const color = agentColorMap[task.agent] || '#6b7280';
+  const emoji = agentEmojiMap[task.agent] || '🤖';
   const isDelegate = !!task.delegatedBy;
 
   return (
@@ -136,6 +131,13 @@ function TaskCard({ task, depth, expanded, onToggle }: {
 }
 
 export function ActivityPanel() {
+  const { agentConfigs } = useAgentConfigs();
+  const agentColorMap: Record<string, string> = Object.fromEntries(
+    agentConfigs.map(a => [a.name, a.accentColor])
+  );
+  const agentEmojiMap: Record<string, string> = Object.fromEntries(
+    agentConfigs.map(a => [a.name, a.emoji])
+  );
   const [open, setOpen] = useState(false);
   const [tasks, setTasks] = useState<ActivityTask[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -194,6 +196,8 @@ export function ActivityPanel() {
           depth={depth}
           expanded={expanded.has(task.id)}
           onToggle={() => toggleExpand(task.id)}
+          agentColorMap={agentColorMap}
+          agentEmojiMap={agentEmojiMap}
         />
         {childrenOf(task.id).map(child => renderTree(child, depth + 1))}
       </div>
