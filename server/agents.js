@@ -48,16 +48,19 @@ export const PERSONAS = DEFAULT_PERSONAS;
  * If the agent is already working, the task is queued instead of starting immediately.
  * All internal call sites (checkDelegation, checkGroupMessages, orchestration) use this.
  */
-export async function scheduleAgent(agentName, taskId, description) {
+export function scheduleAgent(agentName, taskId, description) {
   const agentState = state.agents[agentName];
   if (agentState.status === 'working') {
     enqueueAgentTask(agentName,
-      () => scheduleAgent(agentName, taskId, description),
+      () => runAgent(agentName, taskId, description),
       { taskId, agent: agentName, description, createdAt: new Date().toISOString() }
     );
     return;
   }
+  runAgent(agentName, taskId, description);
+}
 
+async function runAgent(agentName, taskId, description) {
   const agent = state.agents[agentName];
   agent.status = 'working';
   agent.taskId = taskId;
