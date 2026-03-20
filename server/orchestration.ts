@@ -108,7 +108,7 @@ async function watchBothTasks(orchestrationId: string, clawTaskId: string, deepT
         const analystConfig = allAgents.find(a => a.name === analystName) || allAgents[allAgents.length - 1];
         const mergeApiKey = analystConfig?.apiKey || DEEPSEEK_API_KEY;
         const mergeModel = analystConfig?.model || 'deepseek-chat';
-        const mergePersona = PERSONAS[analystName] || PERSONAS['Deep'] || 'You are a helpful assistant.';
+        const mergePersona = PERSONAS[analystName] || PERSONAS['Sage'] || 'You are a helpful assistant.';
         const mergeRes = await fetch('https://api.deepseek.com/v1/chat/completions', {
           method: 'POST',
           headers: {

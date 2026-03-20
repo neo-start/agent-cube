@@ -122,7 +122,7 @@ function ElapsedTimer({ startedAt }: { startedAt: number }) {
 
 /** Strip [DELEGATE:X]\n prefix and return {toAgent, body} */
 function parseDelegation(text: string): { toAgent: string; body: string } | null {
-  const m = text.match(/^\[DELEGATE:(Claw|Deep)\]\n?([\s\S]*)/);
+  const m = text.match(/^\[DELEGATE:(Forge|Sage)\]\n?([\s\S]*)/);
   if (!m) return null;
   return { toAgent: m[1], body: m[2].trim() };
 }
@@ -232,7 +232,7 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
 
         if (!routeShown && data.route) {
           routeShown = true;
-          const label = data.route === 'both' ? 'Claw + Deep' : data.route;
+          const label = data.route === 'both' ? 'Forge + Sage' : data.route;
           const routeMsg: ChatMessage = {
             id: `sys-${Date.now()}`,
             role: 'system',
@@ -244,7 +244,7 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
         }
 
         if (data.status === 'merging') {
-          updateMessage(msgId, { text: 'Merging results from Claw and Deep...', status: 'thinking' });
+          updateMessage(msgId, { text: 'Merging results from Forge and Sage...', status: 'thinking' });
         } else if (data.status === 'done') {
           updateMessage(msgId, { text: data.merged || '(Completed)', status: 'done' });
           setSending(false);

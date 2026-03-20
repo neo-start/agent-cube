@@ -7,7 +7,7 @@ export function MessagePanel() {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [from, setFrom] = useState('User');
-  const [to, setTo] = useState('Claw');
+  const [to, setTo] = useState('Forge');
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [unread, setUnread] = useState(0);

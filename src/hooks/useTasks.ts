@@ -2,8 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import type { AgentsResponse, AgentData } from '../types';
 
 const DEFAULT_AGENTS: Record<string, AgentData> = {
-  Claw: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, by: null, raw: null, delegatedBy: null, parentTaskId: null, source: null },
-  Deep: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, by: null, raw: null, delegatedBy: null, parentTaskId: null, source: null },
+  Forge: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, by: null, raw: null, delegatedBy: null, parentTaskId: null, source: null },
+  Sage: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, by: null, raw: null, delegatedBy: null, parentTaskId: null, source: null },
 };
 
 export function useTasks(pollInterval = 30000) {

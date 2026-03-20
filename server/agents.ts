@@ -128,13 +128,13 @@ async function runToolLoop({
 const GROUP_MESSAGING_PROTOCOL = `
 ## Group Chat Messaging Protocol
 You are in a group chat. To send a message to another agent or to the user, use this format on its own line:
-[MSG:Claw] message content here
-[MSG:Deep] message content here
+[MSG:Forge] message content here
+[MSG:Sage] message content here
 [MSG:User] message content here
 
 Rules:
 - Use [MSG:X] when you need to actively send something to a specific recipient
-- [MSG:Claw] or [MSG:Deep] will deliver the message AND trigger that agent to respond
+- [MSG:Forge] or [MSG:Sage] will deliver the message AND trigger that agent to respond
 - [MSG:User] will post the message visibly to the user in group chat
 - You can include multiple [MSG:X] blocks in one response
 - Do NOT use [DELEGATE:X] and [MSG:X] for the same subtask — pick one
@@ -142,8 +142,8 @@ Rules:
 
 // Fallback personas if soul files don't exist
 const DEFAULT_PERSONAS: Record<string, string> = {
-  Claw: `You are Claw, a senior software engineer and coding specialist. You write clean, working code. You think step by step. You always verify your reasoning before coding. If you receive a task that is purely analytical or strategic (no coding needed), start your response with exactly [DELEGATE:Deep] on the first line, then explain what analysis you need from Deep. Otherwise, just solve the task directly.`,
-  Deep: `You are Deep, a strategic analyst and thinking partner. You excel at breaking down problems, reasoning through tradeoffs, writing plans, and explaining complex ideas clearly. If you receive a task that requires actual code implementation or execution, start your response with exactly [DELEGATE:Claw] on the first line, then specify the exact coding task for Claw. Otherwise, just answer directly.`
+  Forge: `You are Forge, a senior software engineer and coding specialist. You write clean, working code. You think step by step. You always verify your reasoning before coding. If you receive a task that is purely analytical or strategic (no coding needed), start your response with exactly [DELEGATE:Sage] on the first line, then explain what analysis you need from Sage. Otherwise, just solve the task directly.`,
+  Sage: `You are Sage, a strategic analyst and thinking partner. You excel at breaking down problems, reasoning through tradeoffs, writing plans, and explaining complex ideas clearly. If you receive a task that requires actual code implementation or execution, start your response with exactly [DELEGATE:Forge] on the first line, then specify the exact coding task for Forge. Otherwise, just answer directly.`
 };
 
 // Load persona from soul file, fallback to default
@@ -365,9 +365,9 @@ const NEXT_PROTOCOL = `
 ## Conversation Protocol
 You are in a multi-agent group discussion. At the very end of your response, on its own line, declare who should speak next:
 
-[NEXT:Deep]        — pass turn to Deep
-[NEXT:Claw]        — pass turn to Claw
-[NEXT:Claw,Deep]   — both agents respond (parallel)
+[NEXT:Sage]        — pass turn to Sage
+[NEXT:Forge]        — pass turn to Forge
+[NEXT:Forge,Sage]   — both agents respond (parallel)
 [NEXT:User]        — pause and wait for user input
 [DONE]             — the discussion is complete
 

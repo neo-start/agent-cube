@@ -63,7 +63,7 @@ export interface Message {
 
 export const AGENT_CONFIGS: AgentConfig[] = [
   {
-    name: 'Claw',
+    name: 'Forge',
     color: '#1a6cf5',
     accentColor: '#4d9fff',
     role: 'Claude · Coder',
@@ -71,7 +71,7 @@ export const AGENT_CONFIGS: AgentConfig[] = [
     position: [2, 0, 0],
   },
   {
-    name: 'Deep',
+    name: 'Sage',
     color: '#7c3aed',
     accentColor: '#a78bfa',
     role: 'DeepSeek · Thinker',

@@ -26,15 +26,15 @@ type Channel = string; // 'group' or agent name
 const API = '';
 
 const AGENT_COLORS: Record<string, string> = {
-  Claw: '#4d9fff',
-  Deep: '#a78bfa',
+  Forge: '#4d9fff',
+  Sage: '#a78bfa',
   Orchestrator: '#f59e0b',
   User: '#22c55e',
 };
 
 const AGENT_LABELS: Record<string, string> = {
-  Claw: 'Claw (Claude)',
-  Deep: 'Deep (DeepSeek)',
+  Forge: 'Forge (Claude)',
+  Sage: 'Sage (DeepSeek)',
   Orchestrator: 'Orchestrator',
   User: 'You',
 };
@@ -336,7 +336,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
     if (!text) return;
 
     // In group channel, let the server handle @mention routing (Thread vs single agent).
-    // Only set target when in a direct channel (Claw/Deep sidebar).
+    // Only set target when in a direct channel (Forge/Sage sidebar).
     const target = channel !== 'group' ? channel : undefined;
 
     setInput('');
