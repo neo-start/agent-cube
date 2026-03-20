@@ -1,5 +1,7 @@
 import { eventBus } from './event-bus.js';
 import { appendGroupMessage, loadGroupMessages, trimGroupMessagesFile, saveQueuedTasks, loadTasksState, saveTasksState } from './memory.js';
+import { loadAgentRegistry } from './registry.js';
+import { AgentTaskQueue } from './agent-queue.js';
 export { saveTasksState };
 
 // ── Initial state — pre-loaded from disk ─────────────────────────────────────
@@ -10,12 +12,17 @@ const persistedTasks = loadTasksState();
 const _taskNums = Object.keys(persistedTasks).map(id => { const m = id.match(/^task-(\d+)-/); return m ? parseInt(m[1], 10) : 0; });
 const _restoredTaskCounter = _taskNums.length > 0 ? Math.max(..._taskNums) : 0;
 
+// Dynamically initialize agents from registry
+const _registeredAgents = loadAgentRegistry();
+const _agentsInitial = {};
+for (const a of _registeredAgents) {
+  _agentsInitial[a.name] = { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null };
+}
+// Orchestrator is a virtual routing agent, not a provider-backed agent
+_agentsInitial.Orchestrator = { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null };
+
 export const state = {
-  agents: {
-    Claw: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null },
-    Deep: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null },
-    Orchestrator: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null },
-  },
+  agents: _agentsInitial,
   tasks: persistedTasks,
   messages: [],
   groupMessages: persistedMessages,
@@ -43,32 +50,28 @@ export function broadcast() {
   }
 }
 
-// ── Per-agent task queues ─────────────────────────────────────────────────────
-// agentQueues: executable functions (not serializable)
-// agentQueueMeta: serializable metadata for persistence
-export const agentQueues = { Claw: [], Deep: [] };
-export const agentQueueMeta = { Claw: [], Deep: [] };
-
+// ── Per-agent task queues (AgentTaskQueue instances) ──────────────────────────
 const QUEUE_CAP = 20;
 
-// Returns true if enqueued, false if queue is full
-export function enqueueAgentTask(agentName, taskFn, meta = null) {
-  if (agentQueues[agentName].length >= QUEUE_CAP) return false;
-  agentQueues[agentName].push(taskFn);
-  if (meta) {
-    agentQueueMeta[agentName].push(meta);
-    saveQueuedTasks(agentQueueMeta);
-  }
-  return true;
+export const agentTaskQueues = {};
+for (const a of _registeredAgents) {
+  agentTaskQueues[a.name] = new AgentTaskQueue(a.name, QUEUE_CAP);
 }
 
+// Serialize all queue metas and persist to disk.
+export function persistQueues() {
+  const allMeta = Object.fromEntries(
+    Object.entries(agentTaskQueues).map(([name, q]) => [name, q.getMeta()])
+  );
+  const hasQueued = Object.values(agentTaskQueues).some(q => q.length > 0);
+  if (hasQueued) saveQueuedTasks(allMeta);
+}
+
+// Dequeue and run the next task for an agent; persist queue state afterward.
 export function dequeueAgentTask(agentName) {
-  const next = agentQueues[agentName].shift();
-  agentQueueMeta[agentName].shift(); // keep in sync
-  // Only write to disk if there are still queued tasks
-  const hasQueued = Object.values(agentQueueMeta).some(q => q.length > 0);
-  if (hasQueued) saveQueuedTasks(agentQueueMeta);
-  if (next) next();
+  if (!agentTaskQueues[agentName]) return;
+  agentTaskQueues[agentName].dequeue();
+  persistQueues();
 }
 
 // ── Group chat: now routes through EventBus + persists to disk ────────────────

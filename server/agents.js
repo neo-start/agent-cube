@@ -1,8 +1,9 @@
-import { state, broadcast, broadcastGroup, pushGroupMsg, dequeueAgentTask, enqueueAgentTask, saveTasksState } from './state.js';
+import { state, broadcast, broadcastGroup, pushGroupMsg, dequeueAgentTask, persistQueues, agentTaskQueues, saveTasksState } from './state.js';
 import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, loadLongTermMemory, appendLongTermMemory, appendInbox, readInbox, clearInbox, saveThread } from './memory.js';
-import { streamChat } from './claude-proxy.js';
 import { parseToolCalls, executeToolCalls, TOOL_PROTOCOL } from './tools.js';
-import { WORKSPACES_DIR, DEEPSEEK_API_KEY } from './config.js';
+import { WORKSPACES_DIR } from './config.js';
+import { getAgentConfig, getAllAgentNames } from './registry.js';
+import { getProvider } from './providers/index.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -44,17 +45,18 @@ export function getPersona(agentName) {
 export const PERSONAS = DEFAULT_PERSONAS;
 
 /**
- * scheduleAgent — single entry point for running Claw or Deep.
+ * scheduleAgent — single entry point for running any registered agent.
  * If the agent is already working, the task is queued instead of starting immediately.
  * All internal call sites (checkDelegation, checkGroupMessages, orchestration) use this.
  */
 export function scheduleAgent(agentName, taskId, description) {
   const agentState = state.agents[agentName];
   if (agentState.status === 'working') {
-    const enqueued = enqueueAgentTask(agentName,
+    const enqueued = agentTaskQueues[agentName].enqueue(
       () => runAgent(agentName, taskId, description),
       { taskId, agent: agentName, description, createdAt: new Date().toISOString() }
     );
+    if (enqueued) persistQueues();
     if (!enqueued) {
       if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
       const task = state.tasks[taskId];
@@ -102,59 +104,26 @@ async function runAgent(agentName, taskId, description) {
   const workspace = getWorkspace(taskId);
   const MAX_TOOL_ITERS = 10;
 
-  // DeepSeek streaming turn helper (only used when agentName !== 'Claw')
-  async function deepTurn(messages) {
-    const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + DEEPSEEK_API_KEY },
-      body: JSON.stringify({ model: 'deepseek-chat', messages, stream: true }),
-    });
-    if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);
-    let out = '';
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')) {
-        try {
-          const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content || '';
-          out += delta;
-          agent.latestLog = out.slice(-800);
-          if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
-          if (streamMsg) {
-            streamMsg.content = out;
-            broadcastGroup({ ...streamMsg, partial: true });
-          }
-          broadcast();
-        } catch {}
-      }
-    }
-    return out;
-  }
+  const agentConfig = getAgentConfig(agentName);
+  if (!agentConfig) throw new Error(`Unknown agent: ${agentName}`);
+  const provider = getProvider(agentConfig.provider);
 
   try {
     let result = '';
 
-    if (agentName === 'Claw') {
+    if (agentConfig.provider === 'claude') {
       // Claude CLI — session-based, tool results injected as next user message
       let currentPrompt = taskPrompt;
       for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        result = '';
-        await streamChat({
-          agentName: 'Claw',
-          system: systemPrompt,
-          userMessage: currentPrompt,
-          onDelta: (_delta, accumulated) => {
-            result = accumulated;
-            agent.latestLog = result.slice(-800);
-            if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
-            if (streamMsg) {
-              streamMsg.content = result;
-              broadcastGroup({ ...streamMsg, partial: true });
-            }
-            broadcast();
-          },
+        result = await provider.streamProvider(agentName, systemPrompt, currentPrompt, (_, accumulated) => {
+          result = accumulated;
+          agent.latestLog = result.slice(-800);
+          if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
+          if (streamMsg) {
+            streamMsg.content = result;
+            broadcastGroup({ ...streamMsg, partial: true });
+          }
+          broadcast();
         });
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
@@ -163,14 +132,23 @@ async function runAgent(agentName, taskId, description) {
         currentPrompt = toolResults;
       }
     } else {
-      // DeepSeek — message-array based, tool results appended as user turns
+      // Message-array based (DeepSeek, OpenAI, etc.)
       const messages = [
         { role: 'system', content: systemPrompt },
         ...historyMessages,
         { role: 'user', content: taskPrompt },
       ];
       for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        result = await deepTurn(messages);
+        result = await provider.streamProvider(agentName, systemPrompt, messages, (_, accumulated) => {
+          result = accumulated;
+          agent.latestLog = result.slice(-800);
+          if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
+          if (streamMsg) {
+            streamMsg.content = accumulated;
+            broadcastGroup({ ...streamMsg, partial: true });
+          }
+          broadcast();
+        });
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
         if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId });
@@ -214,7 +192,9 @@ async function runAgent(agentName, taskId, description) {
 }
 
 export function checkDelegation(response, fromAgent, taskId, originalDesc) {
-  const match = response.match(/^\[DELEGATE:(Claw|Deep)\]\n?([\s\S]*)/);
+  const agentNames = getAllAgentNames();
+  const namePattern = agentNames.join('|');
+  const match = response.match(new RegExp(`^\\[DELEGATE:(${namePattern})\\]\\n?([\\s\\S]*)`));
   if (!match) return false;
   const toAgent = match[1];
   const delegateDesc = match[2].trim() || originalDesc;
@@ -249,7 +229,9 @@ export function checkDelegation(response, fromAgent, taskId, originalDesc) {
 // Scan response for [MSG:Target] blocks, route each through group chat.
 // Returns true if any MSG blocks were found and processed.
 export function checkGroupMessages(response, fromAgent, taskId) {
-  const pattern = /\[MSG:(Claw|Deep|User)\]([\s\S]*?)(?=\[MSG:|$)/g;
+  const agentNames = getAllAgentNames();
+  const namePattern = agentNames.join('|');
+  const pattern = new RegExp(`\\[MSG:(${namePattern}|User)\\]([\\s\\S]*?)(?=\\[MSG:|$)`, 'g');
   let found = false;
   let match;
 
@@ -262,8 +244,8 @@ export function checkGroupMessages(response, fromAgent, taskId) {
     // Post in group chat as a message from this agent to the target
     pushGroupMsg('agent-msg', fromAgent, msgContent, { toTarget, taskId });
 
-    // If target is another agent, trigger it with a new task
-    if (toTarget === 'Claw' || toTarget === 'Deep') {
+    // If target is another agent (not User), trigger it with a new task
+    if (toTarget !== 'User') {
       const subTaskId = `task-${++state.taskCounter}-${Date.now()}`;
       const parentTask = state.tasks[taskId];
       state.tasks[subTaskId] = {
@@ -410,68 +392,49 @@ export async function runAgentInThread(agentName, threadId) {
   const userMsg = buildThreadContext(thread, agentName);
   const workspace = getWorkspace(threadId);
 
-  // Helper: one DeepSeek streaming turn for thread
-  async function threadDeepTurn(messages) {
-    const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + DEEPSEEK_API_KEY },
-      body: JSON.stringify({ model: 'deepseek-chat', messages, stream: true }),
-    });
-    if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);
-    let out = '';
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')) {
-        try {
-          const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content || '';
-          out += delta;
-          agent.latestLog = out.slice(-800);
-          streamMsg.content = out;
-          broadcastGroup({ ...streamMsg, partial: true });
-          broadcast();
-        } catch {}
-      }
-    }
-    return out;
+  const agentConfig = getAgentConfig(agentName);
+  if (!agentConfig) {
+    agent.status = 'blocked';
+    agent.latestLog = `Unknown agent: ${agentName}`;
+    broadcast();
+    return;
   }
+  const provider = getProvider(agentConfig.provider);
 
   try {
     let result = '';
     const MAX_TOOL_ITERS = 10;
 
-    if (agentName === 'Claw') {
+    if (agentConfig.provider === 'claude') {
       let currentPrompt = userMsg;
       for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        result = '';
-        await streamChat({
-          agentName: 'Claw',
-          system,
-          userMessage: currentPrompt,
-          onDelta: (_, accumulated) => {
-            result = accumulated;
-            agent.latestLog = result.slice(-800);
-            streamMsg.content = result;
-            broadcastGroup({ ...streamMsg, partial: true });
-            broadcast();
-          },
+        result = await provider.streamProvider(agentName, system, currentPrompt, (_, accumulated) => {
+          result = accumulated;
+          agent.latestLog = result.slice(-800);
+          streamMsg.content = result;
+          broadcastGroup({ ...streamMsg, partial: true });
+          broadcast();
         });
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
-        pushGroupMsg('tool-call', 'Claw', `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId });
+        pushGroupMsg('tool-call', agentName, `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId });
         const toolResults = await executeToolCalls(toolCalls, workspace);
         currentPrompt = toolResults;
       }
     } else {
-      // DeepSeek (Deep and any future non-Claude agent)
+      // Message-array based (DeepSeek, OpenAI, etc.)
       const messages = [{ role: 'system', content: system }, { role: 'user', content: userMsg }];
       for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        result = await threadDeepTurn(messages);
+        result = await provider.streamProvider(agentName, system, messages, (_, accumulated) => {
+          result = accumulated;
+          agent.latestLog = result.slice(-800);
+          streamMsg.content = accumulated;
+          broadcastGroup({ ...streamMsg, partial: true });
+          broadcast();
+        });
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
-        pushGroupMsg('tool-call', 'Deep', `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId });
+        pushGroupMsg('tool-call', agentName, `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId });
         const toolResults = await executeToolCalls(toolCalls, workspace);
         messages.push({ role: 'assistant', content: result });
         messages.push({ role: 'user', content: toolResults });

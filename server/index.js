@@ -3,7 +3,7 @@ import cors from 'cors';
 import { join } from 'path';
 import { __dirname, PORT, UPLOADS_DIR } from './config.js';
 import { loadQueuedTasks, clearQueuedTasks } from './memory.js';
-import { state, agentQueues, agentQueueMeta, dequeueAgentTask } from './state.js';
+import { state, agentTaskQueues, dequeueAgentTask } from './state.js';
 import { scheduleAgent } from './agents.js';
 
 // Routes
@@ -21,7 +21,7 @@ import uploadRouter from './routes/upload.js';
   const saved = loadQueuedTasks();
   let restored = 0;
   for (const [agentName, tasks] of Object.entries(saved)) {
-    if (!Array.isArray(tasks)) continue;
+    if (!Array.isArray(tasks) || !agentTaskQueues[agentName]) continue;
     for (const meta of tasks) {
       if (!meta?.taskId || !meta?.description || !meta?.agent) continue;
       if (!state.tasks[meta.taskId]) {
@@ -31,21 +31,17 @@ import uploadRouter from './routes/upload.js';
           result: null, source: 'group', createdAt: meta.createdAt || new Date().toISOString(),
         };
       }
-      const run = () => scheduleAgent(meta.agent, meta.taskId, meta.description);
-      agentQueues[agentName] = agentQueues[agentName] || [];
-      agentQueueMeta[agentName] = agentQueueMeta[agentName] || [];
-      agentQueues[agentName].push(run);
-      agentQueueMeta[agentName].push(meta);
+      agentTaskQueues[agentName].enqueue(
+        () => scheduleAgent(meta.agent, meta.taskId, meta.description),
+        meta
+      );
       restored++;
     }
   }
   if (restored > 0) {
     console.log(`[startup] Restored ${restored} queued task(s)`);
-    // Kick off the first task for each agent that has queued work
-    for (const agentName of Object.keys(agentQueues)) {
-      if (agentQueues[agentName]?.length > 0) {
-        dequeueAgentTask(agentName);
-      }
+    for (const [agentName, queue] of Object.entries(agentTaskQueues)) {
+      if (queue.length > 0) dequeueAgentTask(agentName);
     }
   } else clearQueuedTasks();
 })();
