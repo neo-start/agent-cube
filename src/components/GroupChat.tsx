@@ -23,7 +23,7 @@ interface GroupMessage {
 
 type Channel = string; // 'group' or agent name
 
-const API = 'http://localhost:3020';
+const API = '';
 
 const AGENT_COLORS: Record<string, string> = {
   Claw: '#4d9fff',

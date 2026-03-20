@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { state, pushGroupMsg } from '../state.js';
-import { getGroupBus } from '../group-bus.js';
+import { getGroupBus, removeGroupBus } from '../group-bus.js';
 import { loadGroupRegistry, getGroup, createGroup, updateGroup, deleteGroup, getGroupAgents } from '../group-registry.js';
 import { loadGroupMessagesForGroup } from '../memory.js';
 import { scheduleAgent, createThread, runAgentInThread, resumeThread } from '../agents.js';
@@ -41,6 +41,7 @@ router.delete('/groups/:groupId', (req, res) => {
     const deleted = deleteGroup(req.params.groupId);
     if (!deleted) return res.status(404).json({ ok: false, error: 'Group not found' });
     delete state.groupMessages[req.params.groupId];
+    removeGroupBus(req.params.groupId);
     res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
@@ -200,7 +201,7 @@ export function handleSend(req, res) {
     createdAt: new Date().toISOString(),
   };
   pushGroupMsg('status', 'Orchestrator', 'Routing task...', { status: 'working', groupId });
-  orchestrate(orchestrationId, prompt);
+  orchestrate(orchestrationId, prompt, groupId);
   res.json({ ok: true, taskId });
 }
 

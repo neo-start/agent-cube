@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { Group } from '../types';
 
-const API = 'http://localhost:3020';
+const API = '';
 
 const DEFAULT_GROUP: Group = {
   id: 'default',

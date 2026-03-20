@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-const API = 'http://localhost:3020';
+const API = '';
 
 interface AgentStats {
   totalInput: number;

@@ -87,7 +87,7 @@ async function watchBothTasks(orchestrationId, clawTaskId, deepTaskId, descripti
   }, 1500);
 }
 
-export async function orchestrate(orchestrationId, description) {
+export async function orchestrate(orchestrationId, description, groupId = 'default') {
   const orchAgent = state.agents.Orchestrator;
   orchAgent.status = 'working';
   orchAgent.description = description;
@@ -156,7 +156,7 @@ export async function orchestrate(orchestrationId, description) {
   const makeTask = (agent, desc) => {
     state.taskCounter++;
     const taskId = `task-${state.taskCounter}-${Date.now()}`;
-    state.tasks[taskId] = { id: taskId, agent, description: desc, by: 'Orchestrator', status: 'working', latestLog: null, result: null, delegatedBy: null, parentTaskId: null, source: 'orchestrate', createdAt: new Date().toISOString() };
+    state.tasks[taskId] = { id: taskId, agent, description: desc, by: 'Orchestrator', status: 'working', latestLog: null, result: null, delegatedBy: null, parentTaskId: null, source: 'orchestrate', groupId, createdAt: new Date().toISOString() };
     return taskId;
   };
 

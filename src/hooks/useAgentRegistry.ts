@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { AgentRegistryEntry } from '../types';
 
-const API = 'http://localhost:3020';
+const API = '';
 
 export function useAgentRegistry() {
   const [agents, setAgents] = useState<AgentRegistryEntry[]>([]);

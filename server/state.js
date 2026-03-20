@@ -15,14 +15,14 @@ const persistedTasks = loadTasksState();
 const _taskNums = Object.keys(persistedTasks).map(id => { const m = id.match(/^task-(\d+)-/); return m ? parseInt(m[1], 10) : 0; });
 const _restoredTaskCounter = _taskNums.length > 0 ? Math.max(..._taskNums) : 0;
 
-// Dynamically initialize agents from registry
+// Dynamically initialize agents from registry — all start idle (tasks handle their own status)
 const _registeredAgents = loadAgentRegistry();
 const _agentsInitial = {};
 for (const a of _registeredAgents) {
-  _agentsInitial[a.name] = { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null };
+  _agentsInitial[a.name] = { status: 'idle', taskId: null, description: null, latestLog: 'Restarted', title: null, _startedAt: null };
 }
 // Orchestrator is a virtual routing agent, not a provider-backed agent
-_agentsInitial.Orchestrator = { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null };
+_agentsInitial.Orchestrator = { status: 'idle', taskId: null, description: null, latestLog: 'Restarted', title: null, _startedAt: null };
 
 // Initialize per-group messages from all known groups
 const _groupRegistry = loadGroupRegistry();
@@ -57,7 +57,11 @@ export function broadcast() {
     )
   );
   for (const res of sseClients) {
-    res.write(`data: ${payload}\n\n`);
+    try {
+      res.write(`data: ${payload}\n\n`);
+    } catch {
+      sseClients.delete(res);
+    }
   }
 }
 
@@ -102,10 +106,7 @@ export function pushGroupMsg(type, from, content, meta = {}) {
   return event;
 }
 
-// broadcastGroup is no longer used directly; EventBus handles fan-out.
-export function broadcastGroup() {}
-
-// Re-export groupSseClients as an empty set (SSE is now managed per-connection in group.js)
+// SSE clients for group streams are managed per-connection in routes/group.js
 export const groupSseClients = new Set();
 
 // ── Trim persisted messages files every hour ──────────────────────────────────
