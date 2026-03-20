@@ -6,6 +6,10 @@ export { saveTasksState };
 const persistedMessages = loadGroupMessages();
 const persistedTasks = loadTasksState();
 
+// Restore taskCounter from persisted tasks so IDs stay monotonically increasing
+const _taskNums = Object.keys(persistedTasks).map(id => { const m = id.match(/^task-(\d+)-/); return m ? parseInt(m[1], 10) : 0; });
+const _restoredTaskCounter = _taskNums.length > 0 ? Math.max(..._taskNums) : 0;
+
 export const state = {
   agents: {
     Claw: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null },
@@ -15,7 +19,7 @@ export const state = {
   tasks: persistedTasks,
   messages: [],
   groupMessages: persistedMessages,
-  taskCounter: 0,
+  taskCounter: _restoredTaskCounter,
   orchestrations: {},
   // Thread-based multi-agent conversations
   threads: {},
@@ -45,12 +49,17 @@ export function broadcast() {
 export const agentQueues = { Claw: [], Deep: [] };
 export const agentQueueMeta = { Claw: [], Deep: [] };
 
+const QUEUE_CAP = 20;
+
+// Returns true if enqueued, false if queue is full
 export function enqueueAgentTask(agentName, taskFn, meta = null) {
+  if (agentQueues[agentName].length >= QUEUE_CAP) return false;
   agentQueues[agentName].push(taskFn);
   if (meta) {
     agentQueueMeta[agentName].push(meta);
     saveQueuedTasks(agentQueueMeta);
   }
+  return true;
 }
 
 export function dequeueAgentTask(agentName) {

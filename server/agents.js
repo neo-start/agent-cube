@@ -2,7 +2,7 @@ import { state, broadcast, broadcastGroup, pushGroupMsg, dequeueAgentTask, enque
 import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, loadLongTermMemory, appendLongTermMemory, appendInbox, readInbox, clearInbox, saveThread } from './memory.js';
 import { streamChat } from './claude-proxy.js';
 import { parseToolCalls, executeToolCalls, TOOL_PROTOCOL } from './tools.js';
-import { WORKSPACES_DIR } from './config.js';
+import { WORKSPACES_DIR, DEEPSEEK_API_KEY } from './config.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -51,10 +51,16 @@ export const PERSONAS = DEFAULT_PERSONAS;
 export function scheduleAgent(agentName, taskId, description) {
   const agentState = state.agents[agentName];
   if (agentState.status === 'working') {
-    enqueueAgentTask(agentName,
+    const enqueued = enqueueAgentTask(agentName,
       () => runAgent(agentName, taskId, description),
       { taskId, agent: agentName, description, createdAt: new Date().toISOString() }
     );
+    if (!enqueued) {
+      if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
+      const task = state.tasks[taskId];
+      const isGroupTask = task && (task.source === 'group' || task.source === 'orchestrate' || task.source === 'delegate');
+      if (isGroupTask) pushGroupMsg('status', agentName, `Queue full (max 20), task dropped: ${description.slice(0, 60)}`, { taskId });
+    }
     return;
   }
   runAgent(agentName, taskId, description);
@@ -100,7 +106,7 @@ async function runAgent(agentName, taskId, description) {
   async function deepTurn(messages) {
     const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk-b24861db17d640bba4ffb816c8863f34' },
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + DEEPSEEK_API_KEY },
       body: JSON.stringify({ model: 'deepseek-chat', messages, stream: true }),
     });
     if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);
@@ -408,7 +414,7 @@ export async function runAgentInThread(agentName, threadId) {
   async function threadDeepTurn(messages) {
     const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk-b24861db17d640bba4ffb816c8863f34' },
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + DEEPSEEK_API_KEY },
       body: JSON.stringify({ model: 'deepseek-chat', messages, stream: true }),
     });
     if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);

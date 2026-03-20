@@ -1,5 +1,6 @@
 import { state, broadcast } from './state.js';
 import { scheduleAgent, PERSONAS } from './agents.js';
+import { DEEPSEEK_API_KEY } from './config.js';
 
 export function watchSingleTask(orchestrationId, taskId, resultKey) {
   const iv = setInterval(() => {
@@ -40,7 +41,7 @@ async function watchBothTasks(orchestrationId, clawTaskId, deepTaskId, descripti
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer sk-b24861db17d640bba4ffb816c8863f34',
+            'Authorization': 'Bearer ' + DEEPSEEK_API_KEY,
           },
           body: JSON.stringify({
             model: 'deepseek-chat',
@@ -95,7 +96,7 @@ export async function orchestrate(orchestrationId, description) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer sk-b24861db17d640bba4ffb816c8863f34',
+          'Authorization': 'Bearer ' + DEEPSEEK_API_KEY,
         },
         body: JSON.stringify({
           model: 'deepseek-chat',
