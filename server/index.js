@@ -4,7 +4,7 @@ import { join } from 'path';
 import { __dirname, PORT, UPLOADS_DIR } from './config.js';
 import { loadQueuedTasks, clearQueuedTasks } from './memory.js';
 import { state, agentQueues, agentQueueMeta, dequeueAgentTask } from './state.js';
-import { scheduleAgent, runClaw, runDeep } from './agents.js';
+import { scheduleAgent } from './agents.js';
 
 // Routes
 import tasksRouter from './routes/tasks.js';
@@ -31,8 +31,7 @@ import uploadRouter from './routes/upload.js';
           result: null, source: 'group', createdAt: meta.createdAt || new Date().toISOString(),
         };
       }
-      // run() calls runClaw/runDeep directly — bypasses scheduleAgent to avoid re-enqueue
-      const run = () => meta.agent === 'Claw' ? runClaw(meta.taskId, meta.description) : runDeep(meta.taskId, meta.description);
+      const run = () => scheduleAgent(meta.agent, meta.taskId, meta.description);
       agentQueues[agentName] = agentQueues[agentName] || [];
       agentQueueMeta[agentName] = agentQueueMeta[agentName] || [];
       agentQueues[agentName].push(run);

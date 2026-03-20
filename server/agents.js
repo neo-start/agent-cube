@@ -131,7 +131,7 @@ export function checkGroupMessages(response, fromAgent, taskId) {
   return found;
 }
 
-export async function runClaw(taskId, description) {
+async function runClaw(taskId, description) {
   const agent = state.agents.Claw;
   agent.status = 'working';
   agent.taskId = taskId;
@@ -241,7 +241,7 @@ export async function runClaw(taskId, description) {
   }
 }
 
-export async function runDeep(taskId, description) {
+async function runDeep(taskId, description) {
   const agent = state.agents.Deep;
   agent.status = 'working';
   agent.taskId = taskId;
