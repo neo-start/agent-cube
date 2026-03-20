@@ -221,7 +221,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
 
   useEffect(() => {
     if (!open) return;
-    const es = new EventSource(`${API}/api/groups/${groupId}/events`);
+    const es = new EventSource(`${API}/api/groups/${groupId}/stream`);
 
     es.onmessage = (e) => {
       try {
