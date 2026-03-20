@@ -13,8 +13,11 @@ sleep 1
 
 echo "清空数据..."
 
-# 聊天记录
+# Group 聊天记录
 find "$DATA_DIR/groups" -name "messages.jsonl" -delete 2>/dev/null || true
+
+# Direct chat 历史（ChatModal 1v1 聊天）
+rm -f "$DATA_DIR"/direct-chats/*.json 2>/dev/null || true
 
 # Thread 记录
 rm -f "$DATA_DIR"/threads/*.json 2>/dev/null || true

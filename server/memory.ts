@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { MEMORY_DIR, LOGS_DIR, SCRATCHPAD_FILE, SOULS_DIR, LONG_TERM_DIR, INBOX_DIR, THREADS_DIR, DATA_DIR, PROJECTS_FILE } from './config.js';
+import { MEMORY_DIR, LOGS_DIR, SCRATCHPAD_FILE, SOULS_DIR, LONG_TERM_DIR, INBOX_DIR, THREADS_DIR, DATA_DIR, PROJECTS_FILE, DIRECT_CHATS_DIR } from './config.js';
 import type { Task, Thread, MemoryEntry, Scratchpad, GroupMessage, Project } from './types.js';
 
 const GROUP_MESSAGES_FILE = path.join(DATA_DIR, 'group-messages.jsonl');
@@ -256,5 +256,33 @@ export function loadProjects(): Record<string, Project> {
 export function saveProjects(projects: Record<string, Project>): void {
   try {
     fs.writeFileSync(PROJECTS_FILE, JSON.stringify(projects, null, 2), 'utf-8');
+  } catch {}
+}
+
+// ── Direct-chat history persistence ───────────────────────────────────────────
+
+function getDirectChatFile(agentName: string): string {
+  return path.join(DIRECT_CHATS_DIR, `${agentName}.json`);
+}
+
+export function loadDirectChat(agentName: string): unknown[] {
+  try {
+    const f = getDirectChatFile(agentName);
+    if (!fs.existsSync(f)) return [];
+    return JSON.parse(fs.readFileSync(f, 'utf-8')) as unknown[];
+  } catch { return []; }
+}
+
+export function saveDirectChat(agentName: string, messages: unknown[]): void {
+  try {
+    const trimmed = messages.slice(-200);
+    fs.writeFileSync(getDirectChatFile(agentName), JSON.stringify(trimmed), 'utf-8');
+  } catch {}
+}
+
+export function clearDirectChat(agentName: string): void {
+  try {
+    const f = getDirectChatFile(agentName);
+    if (fs.existsSync(f)) fs.unlinkSync(f);
   } catch {}
 }

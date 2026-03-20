@@ -19,21 +19,25 @@ interface Props {
 }
 
 const API = '';
-const STORAGE_KEY = (agentName: string) => `agent-cube-chat-${agentName}`;
 
-function loadMessages(agentName: string): ChatMessage[] {
+async function loadMessages(agentName: string): Promise<ChatMessage[]> {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY(agentName));
-    return raw ? JSON.parse(raw) : [];
+    const res = await fetch(`${API}/api/direct-chat/${encodeURIComponent(agentName)}`);
+    if (!res.ok) return [];
+    const data = await res.json() as { ok: boolean; messages: ChatMessage[] };
+    return data.messages || [];
   } catch {
     return [];
   }
 }
 
-function saveMessages(agentName: string, messages: ChatMessage[]) {
+async function saveMessages(agentName: string, messages: ChatMessage[]) {
   try {
-    const trimmed = messages.slice(-200);
-    localStorage.setItem(STORAGE_KEY(agentName), JSON.stringify(trimmed));
+    await fetch(`${API}/api/direct-chat/${encodeURIComponent(agentName)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages }),
+    });
   } catch {}
 }
 
@@ -128,14 +132,19 @@ function parseDelegation(text: string): { toAgent: string; body: string } | null
 }
 
 export function ChatModal({ agent, onClose, inline = false }: Props) {
-  const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    // Recover stale 'thinking' messages from previous sessions
-    return loadMessages(agent.name).map(m =>
-      (m.status === 'thinking' || m.status === 'sending')
-        ? { ...m, status: 'error' as const, text: m.text || '(interrupted — server restarted)' }
-        : m
-    );
-  });
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+
+  // Load history from server on mount
+  useEffect(() => {
+    loadMessages(agent.name).then(msgs => {
+      setMessages(msgs.map(m =>
+        (m.status === 'thinking' || m.status === 'sending')
+          ? { ...m, status: 'error' as const, text: m.text || '(interrupted — server restarted)' }
+          : m
+      ));
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent.name]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [autoMode, setAutoMode] = useState(false);
@@ -149,9 +158,9 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Persist messages whenever they change
+  // Persist messages to server whenever they change (skip empty initial state)
   useEffect(() => {
-    saveMessages(agent.name, messages);
+    if (messages.length > 0) saveMessages(agent.name, messages);
   }, [messages, agent.name]);
 
   // Smart scroll: only auto-scroll if user is near the bottom
@@ -355,9 +364,11 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
   const clearHistory = async () => {
     if (confirm(`Clear all conversation history with ${agent.name}?`)) {
       setMessages([]);
-      localStorage.removeItem(STORAGE_KEY(agent.name));
       try {
-        await fetch(`${API}/api/memory/${agent.name}`, { method: 'DELETE' });
+        await Promise.all([
+          fetch(`${API}/api/direct-chat/${encodeURIComponent(agent.name)}`, { method: 'DELETE' }),
+          fetch(`${API}/api/memory/${agent.name}`, { method: 'DELETE' }),
+        ]);
       } catch {}
     }
   };
@@ -607,7 +618,7 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
         </div>
 
         <div style={{ padding: '4px 14px 8px', color: '#1f2937', fontSize: 10, textAlign: 'right', flexShrink: 0 }}>
-          ⌘↵ to send · history saved locally
+          ⌘↵ to send · history saved on server
         </div>
 
       <style>{`

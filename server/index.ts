@@ -19,6 +19,7 @@ import scratchpadRouter from './routes/scratchpad.js';
 import uploadRouter from './routes/upload.js';
 import tokensRouter from './routes/tokens.js';
 import projectsRouter from './routes/projects.js';
+import directChatRouter from './routes/direct-chat.js';
 
 // ── Restore queued tasks from disk on startup ─────────────────────────────────
 (async function restoreQueues() {
@@ -68,6 +69,7 @@ app.use('/api', scratchpadRouter);
 app.use('/api', uploadRouter);
 app.use('/api', tokensRouter);
 app.use('/api/projects', projectsRouter);
+app.use('/api', directChatRouter);
 
 app.use('/uploads', express.static(UPLOADS_DIR));
 app.use(express.static(join(__dirname, '..', 'dist')));
