@@ -182,6 +182,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
   const [hoveredAttId, setHoveredAttId] = useState<string | null>(null);
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
+  const userScrolledUp = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -263,10 +264,13 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
   }, [open, groupId]);
 
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && !userScrolledUp.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, channel]);
+
+  // Reset userScrolledUp when channel changes so new channel auto-scrolls to bottom
+  useEffect(() => { userScrolledUp.current = false; }, [channel, groupId]);
 
   const visibleMessages = messages.filter((msg, idx) => {
     if (msg.type !== 'status') return true;
@@ -922,6 +926,12 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
                 {/* Group Messages — with drag & drop */}
                 <div
                   ref={scrollRef}
+                  onScroll={() => {
+                    const el = scrollRef.current;
+                    if (!el) return;
+                    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+                    userScrolledUp.current = !atBottom;
+                  }}
                   style={{
                     flex: 1, overflowY: 'auto', padding: '12px 20px',
                     position: 'relative',
