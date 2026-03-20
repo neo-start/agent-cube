@@ -48,90 +48,16 @@ export const PERSONAS = DEFAULT_PERSONAS;
  * If the agent is already working, the task is queued instead of starting immediately.
  * All internal call sites (checkDelegation, checkGroupMessages, orchestration) use this.
  */
-export function scheduleAgent(agentName, taskId, description) {
+export async function scheduleAgent(agentName, taskId, description) {
   const agentState = state.agents[agentName];
-  const run = () => runAgent(agentName, taskId, description);
   if (agentState.status === 'working') {
-    enqueueAgentTask(agentName, run, { taskId, agent: agentName, description, createdAt: new Date().toISOString() });
-  } else {
-    run();
+    enqueueAgentTask(agentName,
+      () => scheduleAgent(agentName, taskId, description),
+      { taskId, agent: agentName, description, createdAt: new Date().toISOString() }
+    );
+    return;
   }
-}
 
-export function checkDelegation(response, fromAgent, taskId, originalDesc) {
-  const match = response.match(/^\[DELEGATE:(Claw|Deep)\]\n?([\s\S]*)/);
-  if (!match) return false;
-  const toAgent = match[1];
-  const delegateDesc = match[2].trim() || originalDesc;
-  if (toAgent === fromAgent) return false;
-
-  const parentTask = state.tasks[taskId];
-  const isGroupOrigin = parentTask && (parentTask.source === 'group' || parentTask.source === 'orchestrate' || parentTask.source === 'delegate');
-  if (isGroupOrigin) pushGroupMsg('delegate', fromAgent, delegateDesc, { toAgent, taskId });
-
-  const inheritedAttachments = parentTask?.attachments || [];
-
-  const subTaskId = `task-${++state.taskCounter}-${Date.now()}`;
-  state.tasks[subTaskId] = {
-    id: subTaskId,
-    agent: toAgent,
-    description: delegateDesc,
-    by: fromAgent,
-    status: 'working',
-    latestLog: null,
-    result: null,
-    delegatedBy: fromAgent,
-    parentTaskId: taskId,
-    source: 'delegate',
-    attachments: inheritedAttachments,
-    createdAt: new Date().toISOString(),
-  };
-
-  scheduleAgent(toAgent, subTaskId, delegateDesc);
-  return true;
-}
-
-// Scan response for [MSG:Target] blocks, route each through group chat.
-// Returns true if any MSG blocks were found and processed.
-export function checkGroupMessages(response, fromAgent, taskId) {
-  const pattern = /\[MSG:(Claw|Deep|User)\]([\s\S]*?)(?=\[MSG:|$)/g;
-  let found = false;
-  let match;
-
-  while ((match = pattern.exec(response)) !== null) {
-    const toTarget = match[1];
-    const msgContent = match[2].trim();
-    if (!msgContent) continue;
-    found = true;
-
-    // Post in group chat as a message from this agent to the target
-    pushGroupMsg('agent-msg', fromAgent, msgContent, { toTarget, taskId });
-
-    // If target is another agent, trigger it with a new task
-    if (toTarget === 'Claw' || toTarget === 'Deep') {
-      const subTaskId = `task-${++state.taskCounter}-${Date.now()}`;
-      const parentTask = state.tasks[taskId];
-      state.tasks[subTaskId] = {
-        id: subTaskId,
-        agent: toTarget,
-        description: msgContent,
-        by: fromAgent,
-        status: 'working',
-        latestLog: null,
-        result: null,
-        delegatedBy: fromAgent,
-        parentTaskId: taskId,
-        source: 'group',
-        attachments: parentTask?.attachments || [],
-        createdAt: new Date().toISOString(),
-      };
-      scheduleAgent(toTarget, subTaskId, msgContent);
-    }
-  }
-  return found;
-}
-
-async function runAgent(agentName, taskId, description) {
   const agent = state.agents[agentName];
   agent.status = 'working';
   agent.taskId = taskId;
@@ -276,6 +202,79 @@ async function runAgent(agentName, taskId, description) {
     saveTasksState(state.tasks);
     dequeueAgentTask(agentName);
   }
+}
+
+export function checkDelegation(response, fromAgent, taskId, originalDesc) {
+  const match = response.match(/^\[DELEGATE:(Claw|Deep)\]\n?([\s\S]*)/);
+  if (!match) return false;
+  const toAgent = match[1];
+  const delegateDesc = match[2].trim() || originalDesc;
+  if (toAgent === fromAgent) return false;
+
+  const parentTask = state.tasks[taskId];
+  const isGroupOrigin = parentTask && (parentTask.source === 'group' || parentTask.source === 'orchestrate' || parentTask.source === 'delegate');
+  if (isGroupOrigin) pushGroupMsg('delegate', fromAgent, delegateDesc, { toAgent, taskId });
+
+  const inheritedAttachments = parentTask?.attachments || [];
+
+  const subTaskId = `task-${++state.taskCounter}-${Date.now()}`;
+  state.tasks[subTaskId] = {
+    id: subTaskId,
+    agent: toAgent,
+    description: delegateDesc,
+    by: fromAgent,
+    status: 'working',
+    latestLog: null,
+    result: null,
+    delegatedBy: fromAgent,
+    parentTaskId: taskId,
+    source: 'delegate',
+    attachments: inheritedAttachments,
+    createdAt: new Date().toISOString(),
+  };
+
+  scheduleAgent(toAgent, subTaskId, delegateDesc);
+  return true;
+}
+
+// Scan response for [MSG:Target] blocks, route each through group chat.
+// Returns true if any MSG blocks were found and processed.
+export function checkGroupMessages(response, fromAgent, taskId) {
+  const pattern = /\[MSG:(Claw|Deep|User)\]([\s\S]*?)(?=\[MSG:|$)/g;
+  let found = false;
+  let match;
+
+  while ((match = pattern.exec(response)) !== null) {
+    const toTarget = match[1];
+    const msgContent = match[2].trim();
+    if (!msgContent) continue;
+    found = true;
+
+    // Post in group chat as a message from this agent to the target
+    pushGroupMsg('agent-msg', fromAgent, msgContent, { toTarget, taskId });
+
+    // If target is another agent, trigger it with a new task
+    if (toTarget === 'Claw' || toTarget === 'Deep') {
+      const subTaskId = `task-${++state.taskCounter}-${Date.now()}`;
+      const parentTask = state.tasks[taskId];
+      state.tasks[subTaskId] = {
+        id: subTaskId,
+        agent: toTarget,
+        description: msgContent,
+        by: fromAgent,
+        status: 'working',
+        latestLog: null,
+        result: null,
+        delegatedBy: fromAgent,
+        parentTaskId: taskId,
+        source: 'group',
+        attachments: parentTask?.attachments || [],
+        createdAt: new Date().toISOString(),
+      };
+      scheduleAgent(toTarget, subTaskId, msgContent);
+    }
+  }
+  return found;
 }
 
 // ─── Thread-based multi-agent conversation ────────────────────────────────────
