@@ -70,8 +70,13 @@ export function handleGetMessages(req: Request, res: Response): void {
   const groupId = (req.params['groupId'] as string) || 'default';
   const msgs = state.groupMessages[groupId] || [];
   const since = req.query['since'] ? parseInt(req.query['since'] as string) : 0;
-  const result = since ? msgs.filter((_, i) => i >= since) : msgs;
-  res.json({ messages: result, total: msgs.length });
+  // Filter out messages that are only meaningful during a live session:
+  // - 'stream' type: replaced by 'reply' when done; if server restarted mid-run they'd
+  //   show as "typing..." forever
+  // - 'status' with status='working': "Thinking..." indicators that were never resolved
+  const filtered = msgs.filter(m => !(m.type === 'stream') && !(m.type === 'status' && (m as { status?: string }).status === 'working'));
+  const result = since ? filtered.filter((_, i) => i >= since) : filtered;
+  res.json({ messages: result, total: filtered.length });
 }
 
 router.get('/groups/:groupId/messages', (req: Request, res: Response) => {

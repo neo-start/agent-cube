@@ -95,8 +95,11 @@ export function pushGroupMsg(type: string, from: string, content: string, meta: 
   const bus = getGroupBus(groupId);
   const event = bus.emit({ type, from, content, ...meta });
 
-  // Persist to disk (skip high-frequency streaming partials to avoid file spam)
-  if (!meta['partial']) {
+  // Persist to disk:
+  // - skip partial streaming chunks (high-frequency, no value in history)
+  // - skip 'stream' type entirely: they start empty and get replaced by 'reply' when done;
+  //   if the server restarts mid-stream they'd be stuck as "typing..." in history forever
+  if (!meta['partial'] && type !== 'stream') {
     if (!state.groupMessages[groupId]) state.groupMessages[groupId] = [];
     state.groupMessages[groupId].push(event);
     if (state.groupMessages[groupId].length > 500) state.groupMessages[groupId].shift();
