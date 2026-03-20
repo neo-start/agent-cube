@@ -1,4 +1,4 @@
-import { appendGroupMessageForGroup, loadGroupMessagesForGroup, trimGroupMessagesFileForGroup, migrateGroupMessages, saveQueuedTasks, loadTasksState, saveTasksState, loadProjects } from './memory.js';
+import { appendGroupMessageForGroup, loadGroupMessagesForGroup, trimGroupMessagesFileForGroup, migrateGroupMessages, saveQueuedTasks, loadTasksState, saveTasksState, loadProjects, listThreads } from './memory.js';
 import { loadAgentRegistry } from './registry.js';
 import { loadGroupRegistry } from './group-registry.js';
 import { getGroupBus } from './group-bus.js';
@@ -39,9 +39,20 @@ export const state: AppState = {
   groupMessages: _groupMessagesMap,  // { [groupId]: [...] }
   taskCounter: _restoredTaskCounter,
   orchestrations: {},
-  threads: {},
+  threads: (() => {
+    // Restore threads from disk on startup; deduplicate by id (keep most recent file per thread)
+    const map: Record<string, import('./types.js').Thread> = {};
+    for (const t of listThreads()) {
+      const existing = map[t.id];
+      if (!existing || new Date(t.startedAt) > new Date(existing.startedAt)) {
+        map[t.id] = t;
+      }
+    }
+    return map;
+  })(),
   threadCounter: Math.floor(Date.now() / 1000),
   projects: loadProjects() as Record<string, Project>,
+  pendingClarifications: {},
 };
 
 // ── Legacy SSE clients (agent status panel) ───────────────────────────────────

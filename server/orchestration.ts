@@ -1,7 +1,58 @@
-import { state, broadcast } from './state.js';
+import { state, broadcast, pushGroupMsg } from './state.js';
 import { scheduleAgent, PERSONAS } from './agents.js';
 import { DEEPSEEK_API_KEY } from './config.js';
 import { loadAgentRegistry } from './registry.js';
+
+const CLARIFICATION_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/** Returns true when the message is too vague to route meaningfully. */
+function isAmbiguousInput(text: string): boolean {
+  const words = text.trim().split(/\s+/).filter(w => w.length > 1);
+  if (words.length >= 4) return false; // enough context
+  const lower = text.toLowerCase().trim();
+  const actionable = /\b(code|implement|build|fix|bug|write|create|refactor|deploy|script|function|api|endpoint|component|server|database|sql|error|crash|test|analyze|explain|plan|review|compare|evaluate|research|strategy|design|summarize|document|describe|translate|generate|optimize)\b/;
+  // short AND no actionable keyword
+  return !actionable.test(lower);
+}
+
+/**
+ * If input is ambiguous, post a clarification question from Orchestrator,
+ * store pending state, and return true. Caller should skip normal routing.
+ */
+export function askClarificationIfNeeded(
+  orchestrationId: string,
+  prompt: string,
+  groupId: string,
+): boolean {
+  if (!isAmbiguousInput(prompt)) return false;
+
+  state.pendingClarifications[groupId] = { prompt, orchestrationId, askedAt: Date.now() };
+
+  const orchAgent = state.agents['Orchestrator'];
+  orchAgent.status = 'idle';
+  orchAgent.latestLog = 'Waiting for clarification';
+  broadcast();
+
+  pushGroupMsg('reply', 'Orchestrator',
+    `需要多一点信息才能帮到你。能说说你想做什么吗？比如实现某个功能、分析一个问题，还是修复某个 bug？`,
+    { groupId, taskId: orchestrationId }
+  );
+
+  return true;
+}
+
+/**
+ * Consume a pending clarification for the group. Returns the enriched prompt
+ * (original + clarification answer) if one exists and hasn't expired, else null.
+ */
+export function consumePendingClarification(groupId: string, reply: string): string | null {
+  const pending = state.pendingClarifications[groupId];
+  if (!pending) return null;
+  delete state.pendingClarifications[groupId];
+  // Expired clarification — treat as fresh message
+  if (Date.now() - pending.askedAt > CLARIFICATION_TTL_MS) return null;
+  return `${pending.prompt}\n\nUser clarification: ${reply}`;
+}
 
 export function watchSingleTask(orchestrationId: string, taskId: string, resultKey: 'clawResult' | 'deepResult'): void {
   const iv = setInterval(() => {

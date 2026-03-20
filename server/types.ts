@@ -120,6 +120,12 @@ export interface Orchestration {
   createdAt: string;
 }
 
+export interface PendingClarification {
+  prompt: string;        // original vague message
+  orchestrationId: string;
+  askedAt: number;       // Date.now() — expire after 5 min
+}
+
 export interface AppState {
   agents: Record<string, AgentState>;
   tasks: Record<string, Task>;
@@ -130,6 +136,7 @@ export interface AppState {
   threads: Record<string, Thread>;
   threadCounter: number;
   projects: Record<string, Project>;
+  pendingClarifications: Record<string, PendingClarification>; // groupId → pending
 }
 
 export interface DirectMessage {

@@ -3,7 +3,7 @@ import { state, pushGroupMsg } from '../state.js';
 import { getGroupBus, removeGroupBus } from '../group-bus.js';
 import { loadGroupRegistry, getGroup, createGroup, updateGroup, deleteGroup } from '../group-registry.js';
 import { scheduleAgent, createThread, runAgentInThread, resumeThread } from '../agents.js';
-import { orchestrate } from '../orchestration.js';
+import { orchestrate, askClarificationIfNeeded, consumePendingClarification } from '../orchestration.js';
 import { getAllAgentNames } from '../registry.js';
 
 const router = Router();
@@ -201,24 +201,34 @@ export function handleSend(req: Request, res: Response): void {
     res.json({ ok: true, taskId }); return;
   }
 
-  // ── No @ → Orchestrator routes ────────────────────────────────────────────
+  // ── No @ → check for pending clarification first ─────────────────────────
+  const enrichedPrompt = consumePendingClarification(groupId, prompt);
+  const finalPrompt = enrichedPrompt ?? prompt;
+
   const taskId = `task-${++state.taskCounter}-${Date.now()}`;
+  const orchestrationId = `orch-${state.taskCounter}-${Date.now()}`;
+
+  // If input is ambiguous and there's no clarification yet, ask instead of routing
+  if (!enrichedPrompt && askClarificationIfNeeded(orchestrationId, finalPrompt, groupId)) {
+    res.json({ ok: true, clarificationRequested: true }); return;
+  }
+
+  // ── Route to Orchestrator ─────────────────────────────────────────────────
   state.tasks[taskId] = {
-    id: taskId, agent: 'Orchestrator', description: prompt, by: 'User',
+    id: taskId, agent: 'Orchestrator', description: finalPrompt, by: 'User',
     status: 'working', latestLog: null, result: null,
     delegatedBy: null, parentTaskId: null, source: 'group',
     createdAt: new Date().toISOString(), attachments: attachments || [],
     groupId,
   };
-  const orchestrationId = `orch-${state.taskCounter}-${Date.now()}`;
   state.orchestrations[orchestrationId] = {
-    id: orchestrationId, description: prompt, by: 'User', status: 'routing',
+    id: orchestrationId, description: finalPrompt, by: 'User', status: 'routing',
     route: null, reason: null, clawTaskId: null, deepTaskId: null,
     clawResult: null, deepResult: null, merged: null,
     createdAt: new Date().toISOString(),
   };
   pushGroupMsg('status', 'Orchestrator', 'Routing task...', { status: 'working', groupId });
-  orchestrate(orchestrationId, prompt, groupId);
+  orchestrate(orchestrationId, finalPrompt, groupId);
   res.json({ ok: true, taskId });
 }
 
