@@ -3,10 +3,65 @@ import path from 'path';
 import { MEMORY_DIR, LOGS_DIR, SCRATCHPAD_FILE, SOULS_DIR, LONG_TERM_DIR, INBOX_DIR, THREADS_DIR, DATA_DIR } from './config.js';
 
 const GROUP_MESSAGES_FILE = path.join(DATA_DIR, 'group-messages.jsonl');
+const GROUPS_DIR = path.join(DATA_DIR, 'groups');
 const QUEUED_TASKS_FILE = path.join(DATA_DIR, 'queued-tasks.json');
 const TASKS_STATE_FILE = path.join(DATA_DIR, 'tasks-state.json');
 const GROUP_MESSAGES_LIMIT = 500;
 const TASKS_KEEP_RECENT = 200; // max tasks to keep in snapshot
+
+// ── Per-group message persistence ─────────────────────────────────────────────
+
+function getGroupMessagesFile(groupId) {
+  const dir = path.join(GROUPS_DIR, groupId);
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, 'messages.jsonl');
+}
+
+export function appendGroupMessageForGroup(groupId, msg) {
+  try {
+    fs.appendFileSync(getGroupMessagesFile(groupId), JSON.stringify(msg) + '\n');
+  } catch {}
+}
+
+export function loadGroupMessagesForGroup(groupId) {
+  try {
+    const f = getGroupMessagesFile(groupId);
+    if (!fs.existsSync(f)) return [];
+    const lines = fs.readFileSync(f, 'utf-8').split('\n').filter(l => l.trim());
+    const tail = lines.slice(-GROUP_MESSAGES_LIMIT);
+    return tail.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+}
+
+export function trimGroupMessagesFileForGroup(groupId) {
+  try {
+    const f = getGroupMessagesFile(groupId);
+    if (!fs.existsSync(f)) return;
+    const lines = fs.readFileSync(f, 'utf-8').split('\n').filter(l => l.trim());
+    if (lines.length > GROUP_MESSAGES_LIMIT * 2) {
+      const trimmed = lines.slice(-GROUP_MESSAGES_LIMIT);
+      fs.writeFileSync(f, trimmed.join('\n') + '\n');
+    }
+  } catch {}
+}
+
+// Migration: move old global group-messages.jsonl → groups/default/messages.jsonl
+export function migrateGroupMessages() {
+  if (!fs.existsSync(GROUP_MESSAGES_FILE)) return;
+  try {
+    const content = fs.readFileSync(GROUP_MESSAGES_FILE, 'utf-8');
+    const defaultFile = getGroupMessagesFile('default');
+    const exists = fs.existsSync(defaultFile);
+    const empty = exists && fs.readFileSync(defaultFile, 'utf-8').trim() === '';
+    if (!exists || empty) {
+      fs.writeFileSync(defaultFile, content);
+    }
+    fs.renameSync(GROUP_MESSAGES_FILE, GROUP_MESSAGES_FILE + '.bak');
+    console.log('[migration] Moved group-messages.jsonl → groups/default/messages.jsonl');
+  } catch (e) {
+    console.error('[migration] Failed to migrate group messages:', e);
+  }
+}
 
 // ── Task state persistence ─────────────────────────────────────────────────────
 
@@ -36,37 +91,11 @@ export function loadTasksState() {
   } catch { return {}; }
 }
 
-// ── Group message persistence ─────────────────────────────────────────────────
+// ── Group message persistence (backward compat: delegate to default group) ────
 
-export function appendGroupMessage(msg) {
-  try {
-    fs.appendFileSync(GROUP_MESSAGES_FILE, JSON.stringify(msg) + '\n');
-  } catch {}
-}
-
-export function loadGroupMessages() {
-  try {
-    if (!fs.existsSync(GROUP_MESSAGES_FILE)) return [];
-    const lines = fs.readFileSync(GROUP_MESSAGES_FILE, 'utf8')
-      .split('\n')
-      .filter(l => l.trim());
-    // Keep last N messages
-    const tail = lines.slice(-GROUP_MESSAGES_LIMIT);
-    return tail.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-  } catch { return []; }
-}
-
-// Trim the file to last N lines periodically
-export function trimGroupMessagesFile() {
-  try {
-    if (!fs.existsSync(GROUP_MESSAGES_FILE)) return;
-    const lines = fs.readFileSync(GROUP_MESSAGES_FILE, 'utf8').split('\n').filter(l => l.trim());
-    if (lines.length > GROUP_MESSAGES_LIMIT * 2) {
-      const trimmed = lines.slice(-GROUP_MESSAGES_LIMIT);
-      fs.writeFileSync(GROUP_MESSAGES_FILE, trimmed.join('\n') + '\n');
-    }
-  } catch {}
-}
+export function appendGroupMessage(msg) { appendGroupMessageForGroup('default', msg); }
+export function loadGroupMessages() { return loadGroupMessagesForGroup('default'); }
+export function trimGroupMessagesFile() { trimGroupMessagesFileForGroup('default'); }
 
 // ── Queued task persistence ───────────────────────────────────────────────────
 

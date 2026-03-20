@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { state, broadcast } from '../state.js';
+import { state, broadcast, agentTaskQueues, persistQueues } from '../state.js';
 import { scheduleAgent } from '../agents.js';
 
 const router = Router();
@@ -156,6 +156,29 @@ router.get('/tasks/:id', (req, res) => {
   const task = state.tasks[req.params.id];
   if (!task) return res.status(404).json({ ok: false, error: 'Task not found' });
   res.json({ ok: true, ...task });
+});
+
+// DELETE /api/tasks/:id — cancel a task
+router.delete('/tasks/:id', (req, res) => {
+  const task = state.tasks[req.params.id];
+  if (!task) return res.status(404).json({ ok: false, error: 'Task not found' });
+
+  if (task.status === 'queued') {
+    const queue = agentTaskQueues[task.agent];
+    if (queue) {
+      queue.remove(task.id);
+      persistQueues();
+    }
+    task.status = 'cancelled';
+    return res.json({ ok: true, status: 'cancelled' });
+  }
+
+  if (task.status === 'working') {
+    task.status = 'cancellation-requested';
+    return res.json({ ok: true, status: 'cancellation-requested' });
+  }
+
+  return res.status(400).json({ ok: false, error: `Cannot cancel task with status '${task.status}'` });
 });
 
 export default router;

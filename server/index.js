@@ -9,6 +9,8 @@ import { scheduleAgent } from './agents.js';
 // Routes
 import tasksRouter from './routes/tasks.js';
 import groupRouter from './routes/group.js';
+import groupsRouter from './routes/groups.js';
+import agentsApiRouter from './routes/agents-api.js';
 import statusRouter from './routes/status.js';
 import messagesRouter from './routes/messages.js';
 import memoryRouter from './routes/memory.js';
@@ -52,6 +54,8 @@ app.use(express.json());
 
 app.use('/api', tasksRouter);
 app.use('/api', groupRouter);
+app.use('/api', groupsRouter);
+app.use('/api', agentsApiRouter);
 app.use('/api', statusRouter);
 app.use('/api', messagesRouter);
 app.use('/api', memoryRouter);

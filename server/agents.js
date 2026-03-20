@@ -61,7 +61,7 @@ export function scheduleAgent(agentName, taskId, description) {
       if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
       const task = state.tasks[taskId];
       const isGroupTask = task && (task.source === 'group' || task.source === 'orchestrate' || task.source === 'delegate');
-      if (isGroupTask) pushGroupMsg('status', agentName, `Queue full (max 20), task dropped: ${description.slice(0, 60)}`, { taskId });
+      if (isGroupTask) pushGroupMsg('status', agentName, `Queue full (max 20), task dropped: ${description.slice(0, 60)}`, { taskId, groupId: task?.groupId || 'default' });
     }
     return;
   }
@@ -80,9 +80,10 @@ async function runAgent(agentName, taskId, description) {
 
   const task = state.tasks[taskId];
   const isGroupTask = task && (task.source === 'group' || task.source === 'orchestrate' || task.source === 'delegate');
-  if (isGroupTask) pushGroupMsg('status', agentName, 'Thinking...', { status: 'working', taskId });
+  const groupId = task?.groupId || 'default';
+  if (isGroupTask) pushGroupMsg('status', agentName, 'Thinking...', { status: 'working', taskId, groupId });
 
-  const streamMsg = isGroupTask ? pushGroupMsg('stream', agentName, '', { taskId, status: 'streaming' }) : null;
+  const streamMsg = isGroupTask ? pushGroupMsg('stream', agentName, '', { taskId, status: 'streaming', groupId }) : null;
 
   const mem = loadMemory(agentName);
   const historyMessages = mem.slice(-10).map(m => ({
@@ -127,7 +128,7 @@ async function runAgent(agentName, taskId, description) {
         });
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
-        if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId });
+        if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId, groupId });
         const toolResults = await executeToolCalls(toolCalls, workspace);
         currentPrompt = toolResults;
       }
@@ -151,7 +152,7 @@ async function runAgent(agentName, taskId, description) {
         });
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
-        if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId });
+        if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId, groupId });
         const toolResults = await executeToolCalls(toolCalls, workspace);
         messages.push({ role: 'assistant', content: result });
         messages.push({ role: 'user', content: toolResults });
@@ -202,7 +203,8 @@ export function checkDelegation(response, fromAgent, taskId, originalDesc) {
 
   const parentTask = state.tasks[taskId];
   const isGroupOrigin = parentTask && (parentTask.source === 'group' || parentTask.source === 'orchestrate' || parentTask.source === 'delegate');
-  if (isGroupOrigin) pushGroupMsg('delegate', fromAgent, delegateDesc, { toAgent, taskId });
+  const groupId = parentTask?.groupId || 'default';
+  if (isGroupOrigin) pushGroupMsg('delegate', fromAgent, delegateDesc, { toAgent, taskId, groupId });
 
   const inheritedAttachments = parentTask?.attachments || [];
 
@@ -219,6 +221,7 @@ export function checkDelegation(response, fromAgent, taskId, originalDesc) {
     parentTaskId: taskId,
     source: 'delegate',
     attachments: inheritedAttachments,
+    groupId,
     createdAt: new Date().toISOString(),
   };
 
@@ -241,13 +244,14 @@ export function checkGroupMessages(response, fromAgent, taskId) {
     if (!msgContent) continue;
     found = true;
 
+    const parentTask = state.tasks[taskId];
+    const groupId = parentTask?.groupId || 'default';
     // Post in group chat as a message from this agent to the target
-    pushGroupMsg('agent-msg', fromAgent, msgContent, { toTarget, taskId });
+    pushGroupMsg('agent-msg', fromAgent, msgContent, { toTarget, taskId, groupId });
 
     // If target is another agent (not User), trigger it with a new task
     if (toTarget !== 'User') {
       const subTaskId = `task-${++state.taskCounter}-${Date.now()}`;
-      const parentTask = state.tasks[taskId];
       state.tasks[subTaskId] = {
         id: subTaskId,
         agent: toTarget,
@@ -260,6 +264,7 @@ export function checkGroupMessages(response, fromAgent, taskId) {
         parentTaskId: taskId,
         source: 'group',
         attachments: parentTask?.attachments || [],
+        groupId,
         createdAt: new Date().toISOString(),
       };
       scheduleAgent(toTarget, subTaskId, msgContent);

@@ -1,11 +1,14 @@
-import { eventBus } from './event-bus.js';
-import { appendGroupMessage, loadGroupMessages, trimGroupMessagesFile, saveQueuedTasks, loadTasksState, saveTasksState } from './memory.js';
+import { appendGroupMessageForGroup, loadGroupMessagesForGroup, trimGroupMessagesFileForGroup, migrateGroupMessages, saveQueuedTasks, loadTasksState, saveTasksState } from './memory.js';
 import { loadAgentRegistry } from './registry.js';
+import { loadGroupRegistry } from './group-registry.js';
+import { getGroupBus } from './group-bus.js';
 import { AgentTaskQueue } from './agent-queue.js';
 export { saveTasksState };
 
+// ── Migrate old group-messages.jsonl on startup ───────────────────────────────
+migrateGroupMessages();
+
 // ── Initial state — pre-loaded from disk ─────────────────────────────────────
-const persistedMessages = loadGroupMessages();
 const persistedTasks = loadTasksState();
 
 // Restore taskCounter from persisted tasks so IDs stay monotonically increasing
@@ -21,11 +24,18 @@ for (const a of _registeredAgents) {
 // Orchestrator is a virtual routing agent, not a provider-backed agent
 _agentsInitial.Orchestrator = { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null };
 
+// Initialize per-group messages from all known groups
+const _groupRegistry = loadGroupRegistry();
+const _groupMessagesMap = {};
+for (const g of _groupRegistry) {
+  _groupMessagesMap[g.id] = loadGroupMessagesForGroup(g.id);
+}
+
 export const state = {
   agents: _agentsInitial,
   tasks: persistedTasks,
   messages: [],
-  groupMessages: persistedMessages,
+  groupMessages: _groupMessagesMap,  // { [groupId]: [...] }
   taskCounter: _restoredTaskCounter,
   orchestrations: {},
   // Thread-based multi-agent conversations
@@ -74,16 +84,18 @@ export function dequeueAgentTask(agentName) {
   persistQueues();
 }
 
-// ── Group chat: now routes through EventBus + persists to disk ────────────────
+// ── Group chat: routes through per-group EventBus + persists to disk ──────────
 export function pushGroupMsg(type, from, content, meta = {}) {
-  const event = eventBus.emit({ type, from, content, ...meta });
+  const groupId = meta.groupId || 'default';
+  const bus = getGroupBus(groupId);
+  const event = bus.emit({ type, from, content, ...meta });
 
   // Persist to disk (skip high-frequency streaming partials to avoid file spam)
   if (!meta.partial) {
-    // Also keep in-memory groupMessages for /api/group polling
-    state.groupMessages.push(event);
-    if (state.groupMessages.length > 500) state.groupMessages.shift();
-    appendGroupMessage(event);
+    if (!state.groupMessages[groupId]) state.groupMessages[groupId] = [];
+    state.groupMessages[groupId].push(event);
+    if (state.groupMessages[groupId].length > 500) state.groupMessages[groupId].shift();
+    appendGroupMessageForGroup(groupId, event);
   }
 
   return event;
@@ -95,8 +107,12 @@ export function broadcastGroup() {}
 // Re-export groupSseClients as an empty set (SSE is now managed per-connection in group.js)
 export const groupSseClients = new Set();
 
-// ── Trim persisted messages file every hour ───────────────────────────────────
-setInterval(trimGroupMessagesFile, 60 * 60 * 1000);
+// ── Trim persisted messages files every hour ──────────────────────────────────
+setInterval(() => {
+  for (const groupId of Object.keys(state.groupMessages)) {
+    trimGroupMessagesFileForGroup(groupId);
+  }
+}, 60 * 60 * 1000);
 
 // ── Watchdog: reset stuck agents after 8 minutes ─────────────────────────────
 setInterval(() => {

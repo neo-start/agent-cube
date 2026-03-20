@@ -22,6 +22,16 @@ export class AgentTaskQueue {
     return this.items.length;
   }
 
+  // Remove a queued task by taskId. Returns true if removed.
+  remove(taskId) {
+    const idx = this.items.findIndex(i => i.meta?.taskId === taskId);
+    if (idx !== -1) {
+      this.items.splice(idx, 1);
+      return true;
+    }
+    return false;
+  }
+
   // Returns serializable metadata array for persistence.
   getMeta() {
     return this.items.map(i => i.meta).filter(Boolean);
