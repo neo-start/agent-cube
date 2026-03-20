@@ -99,17 +99,20 @@ async function compactSession(agentName: string, sessionId: string): Promise<str
   });
 }
 
-export async function streamChat({ agentName = 'default', system, userMessage, onDelta, _retry = false, _compactedSummary = null }: {
+export async function streamChat({ agentName = 'default', sessionKey, system, userMessage, onDelta, _retry = false, _compactedSummary = null }: {
   agentName?: string;
+  /** Override the session file key (defaults to agentName). Use for per-thread isolation. */
+  sessionKey?: string;
   system?: string;
   userMessage: string;
   onDelta?: (delta: string, accumulated: string) => void;
   _retry?: boolean;
   _compactedSummary?: string | null;
 }): Promise<ProviderResult> {
+  const sk = sessionKey ?? agentName;
   // 懒加载 session id
-  if (!sessions[agentName]) {
-    sessions[agentName] = await loadSessionId(agentName);
+  if (!sessions[sk]) {
+    sessions[sk] = await loadSessionId(sk);
   }
 
   const cmd = [
@@ -121,8 +124,8 @@ export async function streamChat({ agentName = 'default', system, userMessage, o
 
   if (CLAUDE_MODEL) cmd.push('--model', CLAUDE_MODEL);
 
-  if (sessions[agentName]) {
-    cmd.push('--resume', sessions[agentName]!);
+  if (sessions[sk]) {
+    cmd.push('--resume', sessions[sk]!);
   } else {
     cmd.push('--continue');
   }
@@ -175,12 +178,12 @@ export async function streamChat({ agentName = 'default', system, userMessage, o
             const err = event['result'] as string || ((event['errors'] as string[] || []).join(', ')) || 'unknown error';
             if (/no conversation|session/i.test(err)) {
               // Session not found — clear and let next call start fresh
-              sessions[agentName] = null;
-              saveSessionId(agentName, '');
+              sessions[sk] = null;
+              saveSessionId(sk, '');
             } else if (isContextOverflow(err) && !_retry) {
               // Context window full — compact first, then retry with summary
-              console.warn(`[claude-proxy] Context overflow for ${agentName}, compacting session...`);
-              const overflowSessionId = sessions[agentName];
+              console.warn(`[claude-proxy] Context overflow for ${sk}, compacting session...`);
+              const overflowSessionId = sessions[sk];
               finish(null, `__COMPACT__${overflowSessionId}`, null);
               return;
             }
@@ -189,8 +192,8 @@ export async function streamChat({ agentName = 'default', system, userMessage, o
           } else {
             const text = accumulated || event['result'] as string || '';
             if (event['session_id']) {
-              sessions[agentName] = event['session_id'] as string;
-              saveSessionId(agentName, event['session_id'] as string);
+              sessions[sk] = event['session_id'] as string;
+              saveSessionId(sk, event['session_id'] as string);
             }
             // Extract usage from result event
             const u = event['usage'] as Record<string, number> | undefined;
@@ -229,20 +232,20 @@ export async function streamChat({ agentName = 'default', system, userMessage, o
     // Handle context overflow: compact first, then retry with summary
     if (out && out.result && out.result.startsWith('__COMPACT__')) {
       const overflowSessionId = out.result.slice('__COMPACT__'.length);
-      console.log(`[claude-proxy] Compacting session for ${agentName}...`);
+      console.log(`[claude-proxy] Compacting session for ${sk}...`);
 
-      const summary = await compactSession(agentName, overflowSessionId);
+      const summary = await compactSession(sk, overflowSessionId);
 
       // Clear the overflowed session
-      sessions[agentName] = null;
-      await saveSessionId(agentName, '');
+      sessions[sk] = null;
+      await saveSessionId(sk, '');
 
       const compactedSystem = system
         ? `${system}\n\n## Compacted Context\nThe following is a summary of the previous conversation that was compacted due to context window limits:\n\n${summary}`
         : `## Compacted Context\nThe following is a summary of the previous conversation:\n\n${summary}`;
 
-      console.log(`[claude-proxy] Session compacted for ${agentName}, resuming task...`);
-      return streamChat({ agentName, system: compactedSystem, userMessage, onDelta, _retry: true });
+      console.log(`[claude-proxy] Session compacted for ${sk}, resuming task...`);
+      return streamChat({ agentName, sessionKey, system: compactedSystem, userMessage, onDelta, _retry: true });
     }
     return out;
   });

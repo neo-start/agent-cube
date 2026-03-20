@@ -126,12 +126,13 @@ router.get('/groups/:groupId/stream', (req: Request, res: Response) => {
 // ── POST /api/groups/:groupId/send ────────────────────────────────────────────
 export function handleSend(req: Request, res: Response): void {
   const groupId = (req.params['groupId'] as string) || 'default';
-  const { text, target, attachments, threadId, projectId } = req.body as {
+  const { text, target, attachments, threadId, projectId, maxTurns } = req.body as {
     text: string;
     target?: string;
     attachments?: Array<{ name: string; type: string; url: string }>;
     threadId?: string;
     projectId?: string;
+    maxTurns?: number;
   };
   if (!text) { res.status(400).json({ ok: false, error: 'Missing text' }); return; }
 
@@ -162,7 +163,7 @@ export function handleSend(req: Request, res: Response): void {
 
   // ── Multi-agent: start a Thread ──────────────────────────────────────────
   if (!target && uniqueMentions.length >= 2) {
-    const thread = createThread(uniqueMentions, prompt, 'User', groupId, projectId);
+    const thread = createThread(uniqueMentions, prompt, 'User', groupId, projectId, maxTurns);
     pushGroupMsg('thread-start', 'System', `Discussion started: ${thread.topic}`, { threadId: thread.id, participants: thread.participants, groupId });
     runAgentInThread(uniqueMentions[0], thread.id);
     res.json({ ok: true, threadId: thread.id }); return;

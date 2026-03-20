@@ -3,7 +3,7 @@ import * as deepseekProvider from './deepseek.js';
 import type { ProviderResult } from '../types.js';
 
 interface Provider {
-  streamProvider: (agentName: string, systemPrompt: string, msgOrMessages: string | Array<{ role: string; content: string }>, onDelta?: (delta: string, accumulated: string) => void) => Promise<ProviderResult>;
+  streamProvider: (agentName: string, systemPrompt: string, msgOrMessages: string | Array<{ role: string; content: string }>, onDelta?: (delta: string, accumulated: string) => void, sessionKey?: string) => Promise<ProviderResult>;
 }
 
 const providers: Record<string, Provider> = {

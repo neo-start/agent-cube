@@ -388,7 +388,7 @@ function saveThreadToAgentMemory(thread: Thread): void {
 }
 
 // Create a new Thread
-export function createThread(participants: string[], firstMessage: string, fromUser = 'User', groupId = 'default', projectId?: string): Thread {
+export function createThread(participants: string[], firstMessage: string, fromUser = 'User', groupId = 'default', projectId?: string, maxTurns = 50): Thread {
   const threadId = `thread-${++state.threadCounter}-${Date.now()}`;
   const thread: Thread = {
     id: threadId,
@@ -397,7 +397,7 @@ export function createThread(participants: string[], firstMessage: string, fromU
     participants: [...participants],
     messages: [{ from: fromUser, content: firstMessage, timestamp: new Date().toISOString() }],
     status: 'active',
-    maxTurns: 20,
+    maxTurns,
     startedAt: new Date().toISOString(),
     endedAt: null,
     endReason: null,
@@ -482,6 +482,9 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
   }
   const provider = getProvider(agentConfig.provider);
 
+  // Per-thread session key isolates Claude session from regular task sessions
+  const threadSessionKey = `${agentName}-${threadId}`;
+
   try {
     let result = '';
     let lastUsage = null;
@@ -496,7 +499,7 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
           streamMsg.content = result;
           getGroupBus(threadGroupId).emit({ ...streamMsg, partial: true });
           broadcast();
-        });
+        }, threadSessionKey);
         result = out.result;
         if (out.usage) lastUsage = out.usage;
         const toolCalls = parseToolCalls(result);
@@ -543,16 +546,23 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
     }
 
     // ── History summarization ────────────────────────────────────────────────
+    const SUMMARY_ROLLING_LIMIT = 2000; // chars before re-compressing the summary itself
     const msgsSinceSummary = thread.messages.length - (thread.summaryTurnCount ?? 0);
     if (msgsSinceSummary >= SUMMARIZE_EVERY) {
       const keepRecent = 3;
       const toSummarize = thread.messages.slice(thread.summaryTurnCount ?? 0, -keepRecent);
       if (toSummarize.length >= 3) {
         try {
-          const summaryPrompt = `Summarize this multi-agent discussion concisely. Preserve key decisions, code produced, file changes, and open action items.\n\n${toSummarize.map(m => `${m.from}: ${m.content.slice(0, 600)}`).join('\n---\n')}`;
-          const summaryOut = await provider.streamProvider(agentName, 'You are a concise technical summarizer. Output only the summary.', summaryPrompt, () => {});
-          const prevSummary = thread.summary ? `${thread.summary}\n\n` : '';
-          thread.summary = prevSummary + summaryOut.result.trim();
+          const newContent = toSummarize.map(m => `${m.from}: ${m.content.slice(0, 600)}`).join('\n---\n');
+          const prevSummary = thread.summary ?? '';
+          // Rolling: if existing summary is large, compress prevSummary + new content together
+          const summaryInput = prevSummary.length > SUMMARY_ROLLING_LIMIT
+            ? `[Existing summary to integrate]\n${prevSummary}\n\n[New messages to add]\n${newContent}`
+            : (prevSummary ? `${prevSummary}\n\n[Continuing]\n${newContent}` : newContent);
+          const summaryPrompt = `Summarize this multi-agent technical discussion into a compact but complete summary. Preserve: key decisions, code written/changed, file names, open tasks, and unresolved questions.\n\n${summaryInput}`;
+          // Use a dedicated session key to avoid polluting the agent's task or thread session
+          const summaryOut = await provider.streamProvider(agentName, 'You are a concise technical summarizer. Output only the summary, no preamble.', summaryPrompt, () => {}, `sum-${threadId}`);
+          thread.summary = summaryOut.result.trim();
           thread.summaryTurnCount = thread.messages.length - keepRecent;
         } catch { /* summarization is best-effort */ }
       }
@@ -565,6 +575,9 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
 
     agent.status = 'idle';
     broadcast();
+
+    // Persist thread state after every turn (not just at end)
+    saveThread(thread);
 
     // Parse [NEXT] and dispatch
     const directive = parseNextDirective(result, thread, agentName);

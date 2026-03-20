@@ -9,7 +9,8 @@ export async function streamProvider(
   agentName: string,
   systemPrompt: string,
   userMessage: string,
-  onDelta?: (delta: string, accumulated: string) => void
+  onDelta?: (delta: string, accumulated: string) => void,
+  sessionKey?: string
 ): Promise<ProviderResult> {
-  return streamChat({ agentName, system: systemPrompt, userMessage, onDelta });
+  return streamChat({ agentName, sessionKey, system: systemPrompt, userMessage, onDelta });
 }
