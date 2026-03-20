@@ -17,6 +17,7 @@ export interface AgentsResponse {
   agents: Record<string, AgentData>;
 }
 
+// 3D scene config (existing)
 export interface AgentConfig {
   name: string;
   color: string;
@@ -24,6 +25,22 @@ export interface AgentConfig {
   role: string;
   emoji: string;
   position: [number, number, number];
+}
+
+// Registry entry from /api/agents
+export interface AgentRegistryEntry {
+  name: string;
+  provider: string;
+  model: string;
+  apiKey?: string | null;
+}
+
+export interface Group {
+  id: string;
+  name: string;
+  agents: string[];
+  description?: string;
+  createdAt: string;
 }
 
 export interface UploadedFile {

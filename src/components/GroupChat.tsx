@@ -20,7 +20,7 @@ interface GroupMessage {
   attachments?: UploadedFile[];
 }
 
-type Channel = 'group' | 'Claw' | 'Deep';
+type Channel = string; // 'group' or agent name
 
 const API = 'http://localhost:3020';
 
@@ -38,13 +38,11 @@ const AGENT_LABELS: Record<string, string> = {
   User: 'You',
 };
 
-const CHANNELS: { id: Channel; label: string; icon: string; color: string; desc: string }[] = [
-  { id: 'group', label: 'Group', icon: 'G', color: '#f59e0b', desc: 'All agents' },
-  { id: 'Claw', label: 'Claw', icon: 'C', color: '#4d9fff', desc: 'Claude · Coder' },
-  { id: 'Deep', label: 'Deep', icon: 'D', color: '#a78bfa', desc: 'DeepSeek · Thinker' },
-];
+const AGENT_CHANNEL_COLORS = ['#4d9fff', '#a78bfa', '#22c55e', '#f59e0b', '#ec4899', '#14b8a6'];
 
-const MENTIONABLE = AGENT_CONFIGS.map(a => a.name);
+function agentColor(name: string, idx: number): string {
+  return AGENT_COLORS[name] || AGENT_CHANNEL_COLORS[idx % AGENT_CHANNEL_COLORS.length];
+}
 
 function formatTime(iso: string) {
   try {
@@ -119,11 +117,14 @@ function MessageText({ text }: { text: string }) {
 
 interface GroupChatProps {
   isOpen?: boolean;
-  initialChannel?: Channel | null;
+  initialChannel?: string | null;
   onToggle?: (open: boolean) => void;
+  groupId?: string;
+  groupAgents?: string[];
+  groupName?: string;
 }
 
-export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) {
+export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default', groupAgents, groupName }: GroupChatProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const open = isOpen !== undefined ? isOpen : internalOpen;
   const setOpen = (v: boolean | ((prev: boolean) => boolean)) => {
@@ -133,11 +134,35 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
   };
   const [channel, setChannel] = useState<Channel>('group');
 
+  // Agents for this group (fall back to AGENT_CONFIGS if not provided)
+  const agentNames = groupAgents && groupAgents.length > 0
+    ? groupAgents
+    : AGENT_CONFIGS.map(a => a.name);
+
+  // Dynamic channel list
+  const channels = [
+    { id: 'group', label: groupName || 'Group', icon: 'G', color: '#f59e0b', desc: 'All agents' },
+    ...agentNames.map((name, i) => ({
+      id: name,
+      label: name,
+      icon: name[0].toUpperCase(),
+      color: agentColor(name, i),
+      desc: AGENT_LABELS[name] || name,
+    })),
+  ];
+
+  const mentionable = agentNames;
+
   useEffect(() => {
     if (isOpen && initialChannel) {
-      setChannel(initialChannel as Channel);
+      setChannel(initialChannel);
     }
   }, [isOpen, initialChannel]);
+
+  // Reset to 'group' channel when groupId changes
+  useEffect(() => {
+    setChannel('group');
+  }, [groupId]);
 
   const [messages, setMessages] = useState<GroupMessage[]>([]);
   const [input, setInput] = useState('');
@@ -159,11 +184,18 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
 
   useEffect(() => {
     if (!open) return;
-    fetch(`${API}/api/group`)
+    fetch(`${API}/api/groups/${groupId}/messages`)
       .then(r => r.json())
       .then(data => setMessages(data.messages || []))
-      .catch(() => {});
-  }, [open]);
+      .catch(() => {
+        // fallback to old endpoint
+        fetch(`${API}/api/group`)
+          .then(r => r.json())
+          .then(data => setMessages(data.messages || []))
+          .catch(() => {});
+      });
+    setMessages([]);
+  }, [open, groupId]);
 
   useEffect(() => {
     if (!open) return;
@@ -186,7 +218,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
 
   useEffect(() => {
     if (!open) return;
-    const es = new EventSource(`${API}/api/group/stream`);
+    const es = new EventSource(`${API}/api/groups/${groupId}/events`);
 
     es.onmessage = (e) => {
       try {
@@ -225,7 +257,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
     };
 
     return () => es.close();
-  }, [open]);
+  }, [open, groupId]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -306,19 +338,18 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
     setFiles([]);
 
     try {
-      await fetch(`${API}/api/group/send`, {
+      await fetch(`${API}/api/groups/${groupId}/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text,
           target,
           attachments: sendFiles,
-          // Resume paused thread if one is active
           ...(activeThreadId && channel === 'group' ? { threadId: activeThreadId } : {}),
         }),
       });
     } catch {}
-  }, [input, files, channel, activeThreadId]);
+  }, [input, files, channel, activeThreadId, groupId]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
@@ -336,7 +367,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
     }
   };
 
-  const filteredMentions = MENTIONABLE.filter(name =>
+  const filteredMentions = mentionable.filter(name =>
     name.toLowerCase().startsWith(mentionFilter)
   );
 
@@ -687,7 +718,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
               CHANNELS
             </div>
 
-            {CHANNELS.map(ch => {
+            {channels.map(ch => {
               const isActive = channel === ch.id;
               const status = ch.id !== 'group' ? agentStatuses[ch.id] : undefined;
               return (
@@ -748,15 +779,15 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <div style={{
                   width: 28, height: 28, borderRadius: 6,
-                  background: CHANNELS.find(c => c.id === channel)?.color || '#f59e0b',
+                  background: channels.find(c => c.id === channel)?.color || '#f59e0b',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 13, fontWeight: 700, color: '#fff',
                 }}>
-                  {CHANNELS.find(c => c.id === channel)?.icon}
+                  {channels.find(c => c.id === channel)?.icon}
                 </div>
                 <div>
                   <span style={{ fontSize: 14, fontWeight: 700, color: '#e5e7eb' }}>
-                    {channel === 'group' ? 'Group Chat' : `Chat with ${channel}`}
+                    {channel === 'group' ? `${groupName || 'Group'} Chat` : `Chat with ${channel}`}
                   </span>
                   <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 8 }}>
                     {channel === 'group' ? '@mention to target agent' : 'Direct · file upload · task tracking'}
@@ -779,7 +810,11 @@ export function GroupChat({ isOpen, initialChannel, onToggle }: GroupChatProps) 
                     onClose={() => setChannel('group')}
                     inline
                   />
-                ) : null;
+                ) : (
+                  <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#6b7280', fontSize: 13 }}>
+                    No direct chat available for {channel}
+                  </div>
+                );
               })()
             ) : (
               <>
