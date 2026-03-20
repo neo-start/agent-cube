@@ -53,6 +53,76 @@ function diffSnapshots(before: Record<string, number>, after: Record<string, num
 
 const SUMMARIZE_EVERY = 6; // summarize after every N new messages since last summary
 
+// ── Shared tool loop ──────────────────────────────────────────────────────────
+// Single implementation used by both runAgent (task mode) and runAgentInThread
+// (thread mode). Callers supply side-effect callbacks to keep the core clean.
+async function runToolLoop({
+  agentName,
+  provider,
+  providerName,
+  system,
+  initialPrompt,
+  initialMessages = [],
+  workspace,
+  sessionKey,
+  maxIters = 10,
+  onDelta,
+  onToolStart,
+  onToolEnd,
+}: {
+  agentName: string;
+  provider: { streamProvider: (a: string, s: string, m: string | Array<{ role: string; content: string }>, d?: (d: string, a: string) => void, sk?: string) => Promise<{ result: string; usage: import('./types.js').TokenUsage | null }> };
+  providerName: string;
+  system: string;
+  /** First user message / task prompt */
+  initialPrompt: string;
+  /** Pre-seeded history for non-Claude providers (system + history messages, excluding the initial prompt) */
+  initialMessages?: Array<{ role: string; content: string }>;
+  workspace: string;
+  sessionKey?: string;
+  maxIters?: number;
+  onDelta: (accumulated: string) => void;
+  onToolStart: (toolNames: string[]) => void;
+  onToolEnd: (toolResults: string) => void;
+}): Promise<{ result: string; usage: import('./types.js').TokenUsage | null }> {
+  let result = '';
+  let usage: import('./types.js').TokenUsage | null = null;
+  const delta = (_: string, acc: string) => { result = acc; onDelta(acc); };
+
+  if (providerName === 'claude') {
+    let currentPrompt = initialPrompt;
+    for (let iter = 0; iter < maxIters; iter++) {
+      const out = await provider.streamProvider(agentName, system, currentPrompt, delta, sessionKey);
+      result = out.result;
+      if (out.usage) usage = out.usage;
+      const toolCalls = parseToolCalls(result);
+      if (toolCalls.length === 0) break;
+      onToolStart(toolCalls.map(t => t.name));
+      const toolResults = await executeToolCalls(toolCalls, workspace);
+      onToolEnd(toolResults);
+      currentPrompt = toolResults;
+    }
+  } else {
+    const messages: Array<{ role: string; content: string }> = [
+      ...initialMessages,
+      { role: 'user', content: initialPrompt },
+    ];
+    for (let iter = 0; iter < maxIters; iter++) {
+      const out = await provider.streamProvider(agentName, system, messages, delta);
+      result = out.result;
+      if (out.usage) usage = out.usage;
+      const toolCalls = parseToolCalls(result);
+      if (toolCalls.length === 0) break;
+      onToolStart(toolCalls.map(t => t.name));
+      const toolResults = await executeToolCalls(toolCalls, workspace);
+      onToolEnd(toolResults);
+      messages.push({ role: 'assistant', content: result });
+      messages.push({ role: 'user', content: toolResults });
+    }
+  }
+  return { result, usage };
+}
+
 // Messaging protocol injected into every group-task system prompt
 const GROUP_MESSAGING_PROTOCOL = `
 ## Group Chat Messaging Protocol
@@ -142,68 +212,36 @@ async function runAgent(agentName: string, taskId: string, description: string):
 
   const taskPrompt = `[NEW TASK — focus only on this request, ignore previous conversation history if unrelated]\n\n${description}`;
   const workspace = getWorkspace(taskId);
-  const MAX_TOOL_ITERS = 10;
 
   const agentConfig = getAgentConfig(agentName);
   if (!agentConfig) throw new Error(`Unknown agent: ${agentName}`);
   const provider = getProvider(agentConfig.provider);
 
   try {
-    let result = '';
-    let lastUsage = null;
-
-    if (agentConfig.provider === 'claude') {
-      // Claude CLI — session-based, tool results injected as next user message
-      let currentPrompt = taskPrompt;
-      for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        const out = await provider.streamProvider(agentName, systemPrompt, currentPrompt, (_, accumulated) => {
-          result = accumulated;
-          agent.latestLog = result.slice(-800);
-          if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
-          if (streamMsg) {
-            streamMsg.content = result;
-            getGroupBus(groupId).emit({ ...streamMsg, partial: true });
-          }
-          broadcast();
-        });
-        result = out.result;
-        if (out.usage) lastUsage = out.usage;
-        const toolCalls = parseToolCalls(result);
-        if (toolCalls.length === 0) break;
-        if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId, groupId });
-        const toolResults = await executeToolCalls(toolCalls, workspace);
-        if (streamMsg) pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { taskId, groupId });
-        currentPrompt = toolResults;
-      }
-    } else {
-      // Message-array based (DeepSeek, OpenAI, etc.)
-      const messages: Array<{ role: string; content: string }> = [
-        { role: 'system', content: systemPrompt },
-        ...historyMessages,
-        { role: 'user', content: taskPrompt },
-      ];
-      for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        const out = await provider.streamProvider(agentName, systemPrompt, messages, (_, accumulated) => {
-          result = accumulated;
-          agent.latestLog = result.slice(-800);
-          if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
-          if (streamMsg) {
-            streamMsg.content = accumulated;
-            getGroupBus(groupId).emit({ ...streamMsg, partial: true });
-          }
-          broadcast();
-        });
-        result = out.result;
-        if (out.usage) lastUsage = out.usage;
-        const toolCalls = parseToolCalls(result);
-        if (toolCalls.length === 0) break;
-        if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId, groupId });
-        const toolResults = await executeToolCalls(toolCalls, workspace);
-        if (streamMsg) pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { taskId, groupId });
-        messages.push({ role: 'assistant', content: result });
-        messages.push({ role: 'user', content: toolResults });
-      }
-    }
+    const { result, usage: lastUsage } = await runToolLoop({
+      agentName,
+      provider,
+      providerName: agentConfig.provider,
+      system: systemPrompt,
+      initialPrompt: taskPrompt,
+      initialMessages: [{ role: 'system', content: systemPrompt }, ...historyMessages],
+      workspace,
+      onDelta: (accumulated) => {
+        agent.latestLog = accumulated.slice(-800);
+        if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
+        if (streamMsg) {
+          streamMsg.content = accumulated;
+          getGroupBus(groupId).emit({ ...streamMsg, partial: true });
+        }
+        broadcast();
+      },
+      onToolStart: (names) => {
+        if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${names.length} tool(s): ${names.join(', ')}`, { taskId, groupId });
+      },
+      onToolEnd: (results) => {
+        if (streamMsg) pushGroupMsg('tool-result', agentName, results.slice(0, 300), { taskId, groupId });
+      },
+    });
     recordTokenUsage({ agentName, taskId, provider: agentConfig.provider, usage: lastUsage, model: agentConfig.model });
 
     const isDelegated = checkDelegation(result, agentName, taskId, description);
@@ -486,51 +524,28 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
   const threadSessionKey = `${agentName}-${threadId}`;
 
   try {
-    let result = '';
-    let lastUsage = null;
-    const MAX_TOOL_ITERS = 10;
-
-    if (agentConfig.provider === 'claude') {
-      let currentPrompt = userMsg;
-      for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        const out = await provider.streamProvider(agentName, system, currentPrompt, (_, accumulated) => {
-          result = accumulated;
-          agent.latestLog = result.slice(-800);
-          streamMsg.content = result;
-          getGroupBus(threadGroupId).emit({ ...streamMsg, partial: true });
-          broadcast();
-        }, threadSessionKey);
-        result = out.result;
-        if (out.usage) lastUsage = out.usage;
-        const toolCalls = parseToolCalls(result);
-        if (toolCalls.length === 0) break;
-        pushGroupMsg('tool-call', agentName, `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId, groupId: threadGroupId });
-        const toolResults = await executeToolCalls(toolCalls, workspace);
-        pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { threadId, groupId: threadGroupId });
-        currentPrompt = toolResults;
-      }
-    } else {
-      // Message-array based (DeepSeek, OpenAI, etc.)
-      const messages: Array<{ role: string; content: string }> = [{ role: 'system', content: system }, { role: 'user', content: userMsg }];
-      for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        const out = await provider.streamProvider(agentName, system, messages, (_, accumulated) => {
-          result = accumulated;
-          agent.latestLog = result.slice(-800);
-          streamMsg.content = accumulated;
-          getGroupBus(threadGroupId).emit({ ...streamMsg, partial: true });
-          broadcast();
-        });
-        result = out.result;
-        if (out.usage) lastUsage = out.usage;
-        const toolCalls = parseToolCalls(result);
-        if (toolCalls.length === 0) break;
-        pushGroupMsg('tool-call', agentName, `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId, groupId: threadGroupId });
-        const toolResults = await executeToolCalls(toolCalls, workspace);
-        pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { threadId, groupId: threadGroupId });
-        messages.push({ role: 'assistant', content: result });
-        messages.push({ role: 'user', content: toolResults });
-      }
-    }
+    const { result, usage: lastUsage } = await runToolLoop({
+      agentName,
+      provider,
+      providerName: agentConfig.provider,
+      system,
+      initialPrompt: userMsg,
+      initialMessages: [{ role: 'system', content: system }],
+      workspace,
+      sessionKey: threadSessionKey,
+      onDelta: (accumulated) => {
+        agent.latestLog = accumulated.slice(-800);
+        streamMsg.content = accumulated;
+        getGroupBus(threadGroupId).emit({ ...streamMsg, partial: true });
+        broadcast();
+      },
+      onToolStart: (names) => {
+        pushGroupMsg('tool-call', agentName, `Executing: ${names.join(', ')}`, { threadId, groupId: threadGroupId });
+      },
+      onToolEnd: (results) => {
+        pushGroupMsg('tool-result', agentName, results.slice(0, 300), { threadId, groupId: threadGroupId });
+      },
+    });
     recordTokenUsage({ agentName, taskId: threadId, provider: agentConfig.provider, usage: lastUsage, model: agentConfig.model });
 
     // Append to thread history
