@@ -123,9 +123,10 @@ interface GroupChatProps {
   groupId?: string;
   groupAgents?: string[];
   groupName?: string;
+  onCreateGroup?: () => void;
 }
 
-export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default', groupAgents, groupName }: GroupChatProps) {
+export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default', groupAgents, groupName, onCreateGroup }: GroupChatProps) {
   const [internalOpen, setInternalOpen] = useState(false);
   const open = isOpen !== undefined ? isOpen : internalOpen;
   const setOpen = (v: boolean | ((prev: boolean) => boolean)) => {
@@ -839,6 +840,33 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
                 </button>
               );
             })}
+
+            {/* New Group button */}
+            {onCreateGroup && (
+              <div style={{ padding: '12px 12px 0', marginTop: 'auto' }}>
+                <button
+                  onClick={onCreateGroup}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    background: 'rgba(77, 159, 255, 0.08)',
+                    border: '1px solid rgba(77, 159, 255, 0.2)',
+                    borderRadius: 8,
+                    cursor: 'pointer',
+                    color: '#4d9fff',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    transition: 'background 0.15s',
+                  }}
+                >
+                  + New Group
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Right: chat area */}

@@ -36,7 +36,6 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(true);
   const [groupChatOpen, setGroupChatOpen] = useState(false);
   const [groupChatChannel, setGroupChatChannel] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [createGroupOpen, setCreateGroupOpen] = useState(false);
   const [tokenDashCollapsed, setTokenDashCollapsed] = useState(true);
 
@@ -70,22 +69,12 @@ export default function App() {
         hintBorder: 'rgba(0,0,0,0.08)',
       };
 
-  const sidebarWidth = sidebarCollapsed ? 48 : 220;
-
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', background: theme.bg }}>
-      {/* Left sidebar */}
+      {/* Left sidebar — G button only */}
       <GroupSidebar
-        groups={groups}
-        selectedGroupId={selectedGroupId}
-        onSelectGroup={(id) => {
-          setSelectedGroupId(id);
-          setGroupChatOpen(true);
-          setGroupChatChannel(null);
-        }}
-        onCreateGroup={() => setCreateGroupOpen(true)}
-        collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(c => !c)}
+        isGroupChatOpen={groupChatOpen}
+        onToggleGroupChat={() => setGroupChatOpen(o => !o)}
       />
 
       {/* Main area */}
@@ -179,6 +168,7 @@ export default function App() {
             setGroupChatOpen(open);
             if (!open) setGroupChatChannel(null);
           }}
+          onCreateGroup={() => setCreateGroupOpen(true)}
         />
 
         {/* Toast notification */}
