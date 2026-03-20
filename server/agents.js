@@ -50,7 +50,7 @@ export const PERSONAS = DEFAULT_PERSONAS;
  */
 export function scheduleAgent(agentName, taskId, description) {
   const agentState = state.agents[agentName];
-  const run = () => agentName === 'Claw' ? runClaw(taskId, description) : runDeep(taskId, description);
+  const run = () => runAgent(agentName, taskId, description);
   if (agentState.status === 'working') {
     enqueueAgentTask(agentName, run, { taskId, agent: agentName, description, createdAt: new Date().toISOString() });
   } else {
@@ -131,8 +131,8 @@ export function checkGroupMessages(response, fromAgent, taskId) {
   return found;
 }
 
-async function runClaw(taskId, description) {
-  const agent = state.agents.Claw;
+async function runAgent(agentName, taskId, description) {
+  const agent = state.agents[agentName];
   agent.status = 'working';
   agent.taskId = taskId;
   agent.description = description;
@@ -141,77 +141,114 @@ async function runClaw(taskId, description) {
   agent._startedAt = Date.now();
   broadcast();
 
-  // Only push to group chat if task originated from group/orchestrate/delegate
   const task = state.tasks[taskId];
   const isGroupTask = task && (task.source === 'group' || task.source === 'orchestrate' || task.source === 'delegate');
-  if (isGroupTask) pushGroupMsg('status', 'Claw', 'Thinking...', { status: 'working', taskId });
+  if (isGroupTask) pushGroupMsg('status', agentName, 'Thinking...', { status: 'working', taskId });
 
-  const streamMsg = isGroupTask ? pushGroupMsg('stream', 'Claw', '', { taskId, status: 'streaming' }) : null;
+  const streamMsg = isGroupTask ? pushGroupMsg('stream', agentName, '', { taskId, status: 'streaming' }) : null;
 
-  const mem = loadMemory('Claw');
+  const mem = loadMemory(agentName);
   const historyMessages = mem.slice(-10).map(m => ({
     role: m.role === 'user' ? 'user' : 'assistant',
     content: m.content,
   }));
-  const pad = loadScratchpad();
-  const scratchText = pad.entries.length
-    ? 'SHARED CONTEXT:\n' + pad.entries.map(e => `${e.key}: ${e.value}`).join('\n') + '\n\n'
-    : '';
+  appendMemory(agentName, 'user', description);
 
-  // Build system prompt: soul + long-term memory + shared context + tool protocol + group messaging protocol
-  const soul = getPersona('Claw');
-  const longTermMem = loadLongTermMemory('Claw');
+  const soul = getPersona(agentName);
+  const longTermMem = loadLongTermMemory(agentName);
+  const pad = loadScratchpad();
   let systemPrompt = soul;
   if (longTermMem) systemPrompt += '\n\n## Long-term Memory\n' + longTermMem;
-  if (scratchText) systemPrompt += '\n\n' + scratchText;
+  if (pad.entries.length) systemPrompt += '\n\nSHARED CONTEXT:\n' + pad.entries.map(e => `${e.key}: ${e.value}`).join('\n');
   systemPrompt += TOOL_PROTOCOL;
   if (isGroupTask) systemPrompt += GROUP_MESSAGING_PROTOCOL;
 
-  appendMemory('Claw', 'user', description);
-
-  const clawPrompt = `[NEW TASK — focus only on this request, ignore previous conversation history if unrelated]\n\n${description}`;
+  const taskPrompt = `[NEW TASK — focus only on this request, ignore previous conversation history if unrelated]\n\n${description}`;
   const workspace = getWorkspace(taskId);
+  const MAX_TOOL_ITERS = 10;
 
-  try {
-    let result = '';
-    let currentPrompt = clawPrompt;
-    const MAX_TOOL_ITERS = 10;
-
-    // Tool calling loop: run → parse tools → inject results → repeat
-    for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-      result = '';
-      await streamChat({
-        agentName: 'Claw',
-        system: systemPrompt,
-        userMessage: currentPrompt,
-        onDelta: (_delta, accumulated) => {
-          result = accumulated;
-          agent.latestLog = result.slice(-800);
+  // DeepSeek streaming turn helper (only used when agentName !== 'Claw')
+  async function deepTurn(messages) {
+    const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk-b24861db17d640bba4ffb816c8863f34' },
+      body: JSON.stringify({ model: 'deepseek-chat', messages, stream: true }),
+    });
+    if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);
+    let out = '';
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')) {
+        try {
+          const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content || '';
+          out += delta;
+          agent.latestLog = out.slice(-800);
           if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
           if (streamMsg) {
-            streamMsg.content = result;
+            streamMsg.content = out;
             broadcastGroup({ ...streamMsg, partial: true });
           }
           broadcast();
-        },
-      });
-
-      const toolCalls = parseToolCalls(result);
-      if (toolCalls.length === 0) break; // no tools → done
-
-      // Show tool execution status in group chat
-      if (streamMsg) {
-        pushGroupMsg('tool-call', 'Claw', `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId });
+        } catch {}
       }
+    }
+    return out;
+  }
 
-      const toolResults = await executeToolCalls(toolCalls, workspace);
-      currentPrompt = toolResults; // inject results as next user message (claude CLI continues session)
+  try {
+    let result = '';
+
+    if (agentName === 'Claw') {
+      // Claude CLI — session-based, tool results injected as next user message
+      let currentPrompt = taskPrompt;
+      for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
+        result = '';
+        await streamChat({
+          agentName: 'Claw',
+          system: systemPrompt,
+          userMessage: currentPrompt,
+          onDelta: (_delta, accumulated) => {
+            result = accumulated;
+            agent.latestLog = result.slice(-800);
+            if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
+            if (streamMsg) {
+              streamMsg.content = result;
+              broadcastGroup({ ...streamMsg, partial: true });
+            }
+            broadcast();
+          },
+        });
+        const toolCalls = parseToolCalls(result);
+        if (toolCalls.length === 0) break;
+        if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId });
+        const toolResults = await executeToolCalls(toolCalls, workspace);
+        currentPrompt = toolResults;
+      }
+    } else {
+      // DeepSeek — message-array based, tool results appended as user turns
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...historyMessages,
+        { role: 'user', content: taskPrompt },
+      ];
+      for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
+        result = await deepTurn(messages);
+        const toolCalls = parseToolCalls(result);
+        if (toolCalls.length === 0) break;
+        if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId });
+        const toolResults = await executeToolCalls(toolCalls, workspace);
+        messages.push({ role: 'assistant', content: result });
+        messages.push({ role: 'user', content: toolResults });
+      }
     }
 
-    const isDelegated = checkDelegation(result, 'Claw', taskId, description);
-    if (!isDelegated && isGroupTask) checkGroupMessages(result, 'Claw', taskId);
+    const isDelegated = checkDelegation(result, agentName, taskId, description);
+    if (!isDelegated && isGroupTask) checkGroupMessages(result, agentName, taskId);
     agent.status = 'done';
-    if (!isDelegated) appendMemory('Claw', 'assistant', result.slice(0, 1000));
+    if (!isDelegated) appendMemory(agentName, 'assistant', result.slice(0, 1000));
     if (state.tasks[taskId]) {
       state.tasks[taskId].status = 'done';
       state.tasks[taskId].result = result;
@@ -237,132 +274,7 @@ async function runClaw(taskId, description) {
     broadcast();
   } finally {
     saveTasksState(state.tasks);
-    dequeueAgentTask('Claw');
-  }
-}
-
-async function runDeep(taskId, description) {
-  const agent = state.agents.Deep;
-  agent.status = 'working';
-  agent.taskId = taskId;
-  agent.description = description;
-  agent.title = description.slice(0, 60);
-  agent.latestLog = 'Thinking...';
-  agent._startedAt = Date.now();
-  broadcast();
-
-  const task = state.tasks[taskId];
-  const isGroupTask = task && (task.source === 'group' || task.source === 'orchestrate' || task.source === 'delegate');
-  if (isGroupTask) pushGroupMsg('status', 'Deep', 'Thinking...', { status: 'working', taskId });
-
-  const deepStreamMsg = isGroupTask ? pushGroupMsg('stream', 'Deep', '', { taskId, status: 'streaming' }) : null;
-
-  const mem = loadMemory('Deep');
-  const historyMessages = mem.slice(-10).map(m => ({
-    role: m.role === 'user' ? 'user' : 'assistant',
-    content: m.content,
-  }));
-  appendMemory('Deep', 'user', description);
-
-  const deepPrompt = `[NEW TASK — focus only on this request, ignore previous conversation history if unrelated]\n\n${description}`;
-
-  // Build system prompt: soul + long-term memory + shared context + tool protocol + group messaging protocol
-  const deepSoul = getPersona('Deep');
-  const deepLongTermMem = loadLongTermMemory('Deep');
-  const deepPad = loadScratchpad();
-  let deepSystemContent = deepSoul;
-  if (deepLongTermMem) deepSystemContent += '\n\n## Long-term Memory\n' + deepLongTermMem;
-  if (deepPad.entries.length) deepSystemContent += '\n\nSHARED CONTEXT:\n' + deepPad.entries.map(e => `${e.key}: ${e.value}`).join('\n');
-  deepSystemContent += TOOL_PROTOCOL;
-  if (isGroupTask) deepSystemContent += GROUP_MESSAGING_PROTOCOL;
-
-  const workspace = getWorkspace(taskId);
-
-  // Helper: run one DeepSeek streaming turn
-  async function deepTurn(messages) {
-    const res = await fetch('https://api.deepseek.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer sk-b24861db17d640bba4ffb816c8863f34' },
-      body: JSON.stringify({ model: 'deepseek-chat', messages, stream: true }),
-    });
-    if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);
-    let out = '';
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')) {
-        try {
-          const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content || '';
-          out += delta;
-          agent.latestLog = out.slice(-800);
-          if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
-          if (deepStreamMsg) {
-            deepStreamMsg.content = out;
-            broadcastGroup({ ...deepStreamMsg, partial: true });
-          }
-          broadcast();
-        } catch {}
-      }
-    }
-    return out;
-  }
-
-  try {
-    // Tool calling loop
-    const messages = [
-      { role: 'system', content: deepSystemContent },
-      ...historyMessages,
-      { role: 'user', content: deepPrompt },
-    ];
-    let result = '';
-    const MAX_TOOL_ITERS = 10;
-
-    for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-      result = await deepTurn(messages);
-      const toolCalls = parseToolCalls(result);
-      if (toolCalls.length === 0) break;
-
-      if (deepStreamMsg) {
-        pushGroupMsg('tool-call', 'Deep', `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId });
-      }
-
-      const toolResults = await executeToolCalls(toolCalls, workspace);
-      messages.push({ role: 'assistant', content: result });
-      messages.push({ role: 'user', content: toolResults });
-    }
-
-    const isDelegated = checkDelegation(result, 'Deep', taskId, description);
-    if (!isDelegated && isGroupTask) checkGroupMessages(result, 'Deep', taskId);
-    agent.status = 'done';
-    if (!isDelegated) appendMemory('Deep', 'assistant', result.slice(0, 1000));
-    if (deepStreamMsg) {
-      deepStreamMsg.type = 'reply';
-      deepStreamMsg.content = result;
-      deepStreamMsg.status = 'done';
-      broadcastGroup(deepStreamMsg);
-    }
-    if (state.tasks[taskId]) {
-      state.tasks[taskId].status = 'done';
-      state.tasks[taskId].result = result;
-    }
-    logTask(taskId, { ...state.tasks[taskId], completedAt: new Date().toISOString() });
-    broadcast();
-  } catch (err) {
-    agent.status = 'blocked';
-    agent.latestLog = `Error: ${err.message}`;
-    if (deepStreamMsg) {
-      deepStreamMsg.type = 'reply';
-      deepStreamMsg.content = `Error: ${err.message}`;
-      deepStreamMsg.status = 'error';
-      broadcastGroup(deepStreamMsg);
-    }
-    if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
-    broadcast();
-  } finally {
-    saveTasksState(state.tasks);
-    dequeueAgentTask('Deep');
+    dequeueAgentTask(agentName);
   }
 }
 
