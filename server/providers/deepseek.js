@@ -23,12 +23,16 @@ export async function streamProvider(agentName, systemPrompt, messages, onDelta)
 
   let out = '';
   let usage = null;
+  let lineBuffer = '';
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')) {
+    lineBuffer += decoder.decode(value, { stream: true });
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop(); // keep last incomplete line in buffer
+    for (const line of lines.filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')) {
       try {
         const parsed = JSON.parse(line.slice(6));
         const delta = parsed.choices?.[0]?.delta?.content || '';

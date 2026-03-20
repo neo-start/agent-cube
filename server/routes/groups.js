@@ -141,14 +141,16 @@ export function handleSend(req, res) {
 
   pushGroupMsg('user', 'User', text, { target: target || null, attachments: attachments || [], groupId });
 
-  const mentions = [...text.matchAll(mentionRegex)].map(m =>
-    m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase()
-  );
+  // Case-insensitive match: return the canonical agent name from registry
+  const mentions = [...text.matchAll(mentionRegex)].map(m => {
+    const raw = m[1];
+    return agentNames.find(n => n.toLowerCase() === raw.toLowerCase()) || raw;
+  });
   const uniqueMentions = [...new Set(mentions)];
 
   // ── Multi-agent: start a Thread ──────────────────────────────────────────
   if (!target && uniqueMentions.length >= 2) {
-    const thread = createThread(uniqueMentions, prompt);
+    const thread = createThread(uniqueMentions, prompt, 'User', groupId);
     pushGroupMsg('thread-start', 'System', `Discussion started: ${thread.topic}`, { threadId: thread.id, participants: thread.participants, groupId });
     runAgentInThread(uniqueMentions[0], thread.id);
     return res.json({ ok: true, threadId: thread.id });

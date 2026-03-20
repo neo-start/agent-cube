@@ -122,12 +122,22 @@ router.post('/tasks/intake', (req, res) => {
   const agent = state.agents[agentName];
   if (!agent) return res.status(400).json({ ok: false, error: `Unknown agent: ${agentName}` });
 
+  state.taskCounter++;
+  const taskId = `task-${state.taskCounter}-${Date.now()}`;
+  state.tasks[taskId] = {
+    id: taskId, agent: agentName, description, by: source || 'external',
+    status: 'working', latestLog: null, result: null,
+    delegatedBy: null, parentTaskId: null, source: source || 'intake',
+    createdAt: new Date().toISOString(),
+  };
+
   agent.status = 'working';
+  agent.taskId = taskId;
   agent.description = description;
   agent.title = description.slice(0, 60);
   broadcast();
 
-  res.json({ ok: true, status: 'working', source });
+  res.json({ ok: true, taskId, status: 'working', source });
 });
 
 // POST /api/tasks/:id/complete

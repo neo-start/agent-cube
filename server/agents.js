@@ -347,10 +347,11 @@ function saveThreadToAgentMemory(thread) {
 }
 
 // Create a new Thread
-export function createThread(participants, firstMessage, fromUser = 'User') {
+export function createThread(participants, firstMessage, fromUser = 'User', groupId = 'default') {
   const threadId = `thread-${++state.threadCounter}-${Date.now()}`;
   const thread = {
     id: threadId,
+    groupId,
     topic: firstMessage.slice(0, 80),
     participants: [...participants],
     messages: [{ from: fromUser, content: firstMessage, timestamp: new Date().toISOString() }],
@@ -377,10 +378,12 @@ export async function runAgentInThread(agentName, threadId) {
   const thread = state.threads[threadId];
   if (!thread || thread.status !== 'active') return;
 
+  const threadGroupId = thread.groupId || 'default';
+
   // Dynamically add agent if not yet in participants
   if (!thread.participants.includes(agentName)) {
     thread.participants.push(agentName);
-    pushGroupMsg('thread-join', agentName, `${agentName} joined the discussion`, { threadId });
+    pushGroupMsg('thread-join', agentName, `${agentName} joined the discussion`, { threadId, groupId: threadGroupId });
   }
 
   const agent = state.agents[agentName];
@@ -429,7 +432,7 @@ export async function runAgentInThread(agentName, threadId) {
           result = accumulated;
           agent.latestLog = result.slice(-800);
           streamMsg.content = result;
-          getGroupBus(threadId).emit({ ...streamMsg, partial: true });
+          getGroupBus(threadGroupId).emit({ ...streamMsg, partial: true });
           broadcast();
         });
         result = out.result;
@@ -449,7 +452,7 @@ export async function runAgentInThread(agentName, threadId) {
           result = accumulated;
           agent.latestLog = result.slice(-800);
           streamMsg.content = accumulated;
-          getGroupBus(threadId).emit({ ...streamMsg, partial: true });
+          getGroupBus(threadGroupId).emit({ ...streamMsg, partial: true });
           broadcast();
         });
         result = out.result;
@@ -471,7 +474,7 @@ export async function runAgentInThread(agentName, threadId) {
     streamMsg.type = 'reply';
     streamMsg.content = result;
     streamMsg.status = 'done';
-    getGroupBus(threadId).emit(streamMsg);
+    getGroupBus(threadGroupId).emit(streamMsg);
 
     agent.status = 'idle';
     broadcast();
@@ -502,7 +505,7 @@ export async function runAgentInThread(agentName, threadId) {
     streamMsg.type = 'reply';
     streamMsg.content = `Error: ${err.message}`;
     streamMsg.status = 'error';
-    getGroupBus(threadId).emit(streamMsg);
+    getGroupBus(threadGroupId).emit(streamMsg);
     broadcast();
   }
 }

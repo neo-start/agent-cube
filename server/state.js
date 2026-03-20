@@ -39,8 +39,9 @@ export const state = {
   taskCounter: _restoredTaskCounter,
   orchestrations: {},
   // Thread-based multi-agent conversations
+  // Initialize threadCounter from current timestamp (seconds) so IDs never collide across restarts
   threads: {},
-  threadCounter: 0,
+  threadCounter: Math.floor(Date.now() / 1000),
 };
 
 // ── Legacy SSE clients (agent status panel) ───────────────────────────────────

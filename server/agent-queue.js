@@ -15,7 +15,11 @@ export class AgentTaskQueue {
   // Dequeue and execute the next task (if any).
   dequeue() {
     const item = this.items.shift();
-    if (item?.fn) item.fn();
+    if (item?.fn) {
+      try { item.fn(); } catch (err) {
+        console.error(`[AgentTaskQueue:${this.agentName}] task error:`, err.message);
+      }
+    }
   }
 
   get length() {
