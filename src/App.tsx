@@ -3,6 +3,7 @@ import { Scene } from './components/Scene';
 import { GroupChat } from './components/GroupChat';
 import { GroupSidebar } from './components/GroupSidebar';
 import { CreateGroupModal } from './components/CreateGroupModal';
+import { TokenDashboard } from './components/TokenDashboard';
 import { useTasks } from './hooks/useTasks';
 import { useGroups } from './hooks/useGroups';
 import { AGENT_CONFIGS } from './types';
@@ -37,6 +38,7 @@ export default function App() {
   const [groupChatChannel, setGroupChatChannel] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [createGroupOpen, setCreateGroupOpen] = useState(false);
+  const [tokenDashCollapsed, setTokenDashCollapsed] = useState(true);
 
   const showToast = (text: string, color: string) => {
     setToast({ text, color });
@@ -195,6 +197,14 @@ export default function App() {
             {toast.text}
           </div>
         )}
+
+        {/* Token Dashboard — bottom-right floating panel */}
+        <div style={{ position: 'absolute', bottom: 20, right: 20, zIndex: 100, width: 260 }}>
+          <TokenDashboard
+            collapsed={tokenDashCollapsed}
+            onToggle={() => setTokenDashCollapsed(c => !c)}
+          />
+        </div>
 
         {/* Bottom hint */}
         <div style={{

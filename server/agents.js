@@ -1,9 +1,11 @@
 import { state, broadcast, broadcastGroup, pushGroupMsg, dequeueAgentTask, persistQueues, agentTaskQueues, saveTasksState } from './state.js';
-import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, loadLongTermMemory, appendLongTermMemory, appendInbox, readInbox, clearInbox, saveThread } from './memory.js';
+import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, appendLongTermMemory, appendInbox, readInbox, clearInbox, saveThread } from './memory.js';
 import { parseToolCalls, executeToolCalls, TOOL_PROTOCOL } from './tools.js';
 import { WORKSPACES_DIR } from './config.js';
 import { getAgentConfig, getAllAgentNames } from './registry.js';
 import { getProvider } from './providers/index.js';
+import { recordTokenUsage } from './token-tracker.js';
+import { retrieveRelevantMemory } from './memory-rag.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -93,10 +95,10 @@ async function runAgent(agentName, taskId, description) {
   appendMemory(agentName, 'user', description);
 
   const soul = getPersona(agentName);
-  const longTermMem = loadLongTermMemory(agentName);
+  const relevantMem = retrieveRelevantMemory(agentName, description);
   const pad = loadScratchpad();
   let systemPrompt = soul;
-  if (longTermMem) systemPrompt += '\n\n## Long-term Memory\n' + longTermMem;
+  if (relevantMem) systemPrompt += '\n\n## Relevant Memory\n' + relevantMem;
   if (pad.entries.length) systemPrompt += '\n\nSHARED CONTEXT:\n' + pad.entries.map(e => `${e.key}: ${e.value}`).join('\n');
   systemPrompt += TOOL_PROTOCOL;
   if (isGroupTask) systemPrompt += GROUP_MESSAGING_PROTOCOL;
@@ -111,12 +113,13 @@ async function runAgent(agentName, taskId, description) {
 
   try {
     let result = '';
+    let lastUsage = null;
 
     if (agentConfig.provider === 'claude') {
       // Claude CLI — session-based, tool results injected as next user message
       let currentPrompt = taskPrompt;
       for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        result = await provider.streamProvider(agentName, systemPrompt, currentPrompt, (_, accumulated) => {
+        const out = await provider.streamProvider(agentName, systemPrompt, currentPrompt, (_, accumulated) => {
           result = accumulated;
           agent.latestLog = result.slice(-800);
           if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
@@ -126,10 +129,13 @@ async function runAgent(agentName, taskId, description) {
           }
           broadcast();
         });
+        result = out.result;
+        if (out.usage) lastUsage = out.usage;
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
         if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId, groupId });
         const toolResults = await executeToolCalls(toolCalls, workspace);
+        if (streamMsg) pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { taskId, groupId });
         currentPrompt = toolResults;
       }
     } else {
@@ -140,7 +146,7 @@ async function runAgent(agentName, taskId, description) {
         { role: 'user', content: taskPrompt },
       ];
       for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        result = await provider.streamProvider(agentName, systemPrompt, messages, (_, accumulated) => {
+        const out = await provider.streamProvider(agentName, systemPrompt, messages, (_, accumulated) => {
           result = accumulated;
           agent.latestLog = result.slice(-800);
           if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
@@ -150,14 +156,18 @@ async function runAgent(agentName, taskId, description) {
           }
           broadcast();
         });
+        result = out.result;
+        if (out.usage) lastUsage = out.usage;
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
         if (streamMsg) pushGroupMsg('tool-call', agentName, `Executing ${toolCalls.length} tool(s): ${toolCalls.map(t => t.name).join(', ')}`, { taskId, groupId });
         const toolResults = await executeToolCalls(toolCalls, workspace);
+        if (streamMsg) pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { taskId, groupId });
         messages.push({ role: 'assistant', content: result });
         messages.push({ role: 'user', content: toolResults });
       }
     }
+    recordTokenUsage({ agentName, taskId, provider: agentConfig.provider, usage: lastUsage, model: agentConfig.model });
 
     const isDelegated = checkDelegation(result, agentName, taskId, description);
     if (!isDelegated && isGroupTask) checkGroupMessages(result, agentName, taskId);
@@ -386,10 +396,10 @@ export async function runAgentInThread(agentName, threadId) {
 
   // Build system prompt
   const soul = getPersona(agentName);
-  const longTermMem = loadLongTermMemory(agentName);
+  const relevantMem = retrieveRelevantMemory(agentName, thread.topic);
   const pad = loadScratchpad();
   let system = soul;
-  if (longTermMem) system += '\n\n## Long-term Memory\n' + longTermMem;
+  if (relevantMem) system += '\n\n## Relevant Memory\n' + relevantMem;
   if (pad.entries.length) system += '\n\nSHARED CONTEXT:\n' + pad.entries.map(e => `${e.key}: ${e.value}`).join('\n');
   system += TOOL_PROTOCOL;
   system += NEXT_PROTOCOL;
@@ -408,43 +418,51 @@ export async function runAgentInThread(agentName, threadId) {
 
   try {
     let result = '';
+    let lastUsage = null;
     const MAX_TOOL_ITERS = 10;
 
     if (agentConfig.provider === 'claude') {
       let currentPrompt = userMsg;
       for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        result = await provider.streamProvider(agentName, system, currentPrompt, (_, accumulated) => {
+        const out = await provider.streamProvider(agentName, system, currentPrompt, (_, accumulated) => {
           result = accumulated;
           agent.latestLog = result.slice(-800);
           streamMsg.content = result;
           broadcastGroup({ ...streamMsg, partial: true });
           broadcast();
         });
+        result = out.result;
+        if (out.usage) lastUsage = out.usage;
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
         pushGroupMsg('tool-call', agentName, `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId });
         const toolResults = await executeToolCalls(toolCalls, workspace);
+        pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { threadId });
         currentPrompt = toolResults;
       }
     } else {
       // Message-array based (DeepSeek, OpenAI, etc.)
       const messages = [{ role: 'system', content: system }, { role: 'user', content: userMsg }];
       for (let iter = 0; iter < MAX_TOOL_ITERS; iter++) {
-        result = await provider.streamProvider(agentName, system, messages, (_, accumulated) => {
+        const out = await provider.streamProvider(agentName, system, messages, (_, accumulated) => {
           result = accumulated;
           agent.latestLog = result.slice(-800);
           streamMsg.content = accumulated;
           broadcastGroup({ ...streamMsg, partial: true });
           broadcast();
         });
+        result = out.result;
+        if (out.usage) lastUsage = out.usage;
         const toolCalls = parseToolCalls(result);
         if (toolCalls.length === 0) break;
         pushGroupMsg('tool-call', agentName, `Executing: ${toolCalls.map(t => t.name).join(', ')}`, { threadId });
         const toolResults = await executeToolCalls(toolCalls, workspace);
+        pushGroupMsg('tool-result', agentName, toolResults.slice(0, 300), { threadId });
         messages.push({ role: 'assistant', content: result });
         messages.push({ role: 'user', content: toolResults });
       }
     }
+    recordTokenUsage({ agentName, taskId: threadId, provider: agentConfig.provider, usage: lastUsage, model: agentConfig.model });
 
     // Append to thread history
     thread.messages.push({ from: agentName, content: result, timestamp: new Date().toISOString() });

@@ -5,7 +5,8 @@ import { ChatModal } from './ChatModal';
 interface GroupMessage {
   id: string;
   type: 'user' | 'reply' | 'delegate' | 'status' | 'stream' | 'agent-msg'
-      | 'thread-start' | 'thread-end' | 'thread-pause' | 'thread-join';
+      | 'thread-start' | 'thread-end' | 'thread-pause' | 'thread-join'
+      | 'tool-call' | 'tool-result';
   from: string;
   content: string;
   timestamp: string;
@@ -178,6 +179,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
   const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
   const [hoveredFileId, setHoveredFileId] = useState<string | null>(null);
   const [hoveredAttId, setHoveredAttId] = useState<string | null>(null);
+  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -510,6 +512,77 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
           }}>
             Discussion ended {msg.endReason === 'max-turns' ? '(max turns reached)' : ''}
           </span>
+        </div>
+      );
+    }
+
+    if (msg.type === 'tool-call') {
+      const agentCol = AGENT_COLORS[msg.from] || '#6b7280';
+      const isExpanded = expandedTools.has(msg.id);
+      return (
+        <div key={msg.id} style={{ display: 'flex', justifyContent: 'center', padding: '3px 0' }}>
+          <button
+            onClick={() => setExpandedTools(prev => {
+              const next = new Set(prev);
+              if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
+              return next;
+            })}
+            style={{
+              background: 'rgba(234, 179, 8, 0.06)',
+              border: '1px solid rgba(234, 179, 8, 0.2)',
+              borderRadius: 8, padding: '4px 12px',
+              cursor: 'pointer', textAlign: 'left',
+              maxWidth: '70%',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 12 }}>⚙️</span>
+              <span style={{ fontSize: 11, color: agentCol, fontWeight: 600 }}>{msg.from}</span>
+              <span style={{ fontSize: 11, color: '#d97706' }}>{msg.content.replace(/^Executing \d+ tool\(s\): /, '')}</span>
+              <span style={{ fontSize: 10, color: '#6b7280', marginLeft: 4 }}>{isExpanded ? '▲' : '▼'}</span>
+            </div>
+            {isExpanded && (
+              <div style={{ marginTop: 6, fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {msg.content}
+              </div>
+            )}
+          </button>
+        </div>
+      );
+    }
+
+    if (msg.type === 'tool-result') {
+      const agentCol = AGENT_COLORS[msg.from] || '#6b7280';
+      const isExpanded = expandedTools.has(msg.id + '-result');
+      return (
+        <div key={msg.id} style={{ display: 'flex', justifyContent: 'center', padding: '3px 0' }}>
+          <button
+            onClick={() => setExpandedTools(prev => {
+              const next = new Set(prev);
+              const k = msg.id + '-result';
+              if (next.has(k)) next.delete(k); else next.add(k);
+              return next;
+            })}
+            style={{
+              background: 'rgba(107, 114, 128, 0.06)',
+              border: '1px solid rgba(107, 114, 128, 0.15)',
+              borderRadius: 8, padding: '4px 12px',
+              cursor: 'pointer', textAlign: 'left',
+              maxWidth: '70%',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 12 }}>✓</span>
+              <span style={{ fontSize: 11, color: agentCol, fontWeight: 600 }}>{msg.from}</span>
+              <span style={{ fontSize: 11, color: '#6b7280' }}>tool result</span>
+              <span style={{ fontSize: 10, color: '#4b5563', marginLeft: 4 }}>{isExpanded ? '▲' : '▼'}</span>
+            </div>
+            {isExpanded && (
+              <div style={{ marginTop: 6, fontSize: 11, color: '#9ca3af', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {msg.content}
+              </div>
+            )}
+          </button>
         </div>
       );
     }

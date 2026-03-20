@@ -22,6 +22,7 @@ export async function streamProvider(agentName, systemPrompt, messages, onDelta)
   if (!res.ok) throw new Error(`DeepSeek API error: ${res.status}`);
 
   let out = '';
+  let usage = null;
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   while (true) {
@@ -29,13 +30,21 @@ export async function streamProvider(agentName, systemPrompt, messages, onDelta)
     if (done) break;
     for (const line of decoder.decode(value).split('\n').filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')) {
       try {
-        const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content || '';
+        const parsed = JSON.parse(line.slice(6));
+        const delta = parsed.choices?.[0]?.delta?.content || '';
         if (delta) {
           out += delta;
           if (onDelta) onDelta(delta, out);
         }
+        if (parsed.usage) {
+          usage = {
+            inputTokens: parsed.usage.prompt_tokens || 0,
+            outputTokens: parsed.usage.completion_tokens || 0,
+            cacheTokens: 0,
+          };
+        }
       } catch {}
     }
   }
-  return out;
+  return { result: out, usage };
 }

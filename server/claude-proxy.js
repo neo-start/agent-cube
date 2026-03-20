@@ -143,11 +143,11 @@ export async function streamChat({ agentName = 'default', system, userMessage, o
     let stderr = '';
     let settled = false;
 
-    const finish = (err, result) => {
+    const finish = (err, result, usage) => {
       if (settled) return;
       settled = true;
       if (err) reject(err);
-      else resolve(result);
+      else resolve({ result, usage: usage || null });
     };
 
     proc.stdout.on('data', (chunk) => {
@@ -183,18 +183,25 @@ export async function streamChat({ agentName = 'default', system, userMessage, o
               // Context window full — compact first, then retry with summary
               console.warn(`[claude-proxy] Context overflow for ${agentName}, compacting session...`);
               const overflowSessionId = sessions[agentName];
-              finish(null, `__COMPACT__${overflowSessionId}`);
+              finish(null, `__COMPACT__${overflowSessionId}`, null);
               return;
             }
-            if (!accumulated) finish(new Error(`Claude error: ${err}`), null);
-            else finish(null, accumulated);
+            if (!accumulated) finish(new Error(`Claude error: ${err}`), null, null);
+            else finish(null, accumulated, null);
           } else {
             const text = accumulated || event.result || '';
             if (event.session_id) {
               sessions[agentName] = event.session_id;
               saveSessionId(agentName, event.session_id);
             }
-            finish(null, text);
+            // Extract usage from result event
+            const u = event.usage;
+            const usage = u ? {
+              inputTokens: u.input_tokens || 0,
+              outputTokens: u.output_tokens || 0,
+              cacheTokens: u.cache_creation_input_tokens || 0,
+            } : null;
+            finish(null, text, usage);
           }
         }
       }
@@ -203,13 +210,13 @@ export async function streamChat({ agentName = 'default', system, userMessage, o
     proc.stderr.on('data', (d) => { stderr += d.toString(); });
 
     proc.on('error', (err) => {
-      finish(new Error(`Failed to spawn claude: ${err.message}`), null);
+      finish(new Error(`Failed to spawn claude: ${err.message}`), null, null);
     });
 
     proc.on('close', (code) => {
       if (!settled) {
-        if (accumulated) finish(null, accumulated);
-        else finish(new Error(`claude exited ${code}: ${stderr.slice(0, 200)}`), null);
+        if (accumulated) finish(null, accumulated, null);
+        else finish(new Error(`claude exited ${code}: ${stderr.slice(0, 200)}`), null, null);
       }
     });
 
@@ -217,13 +224,13 @@ export async function streamChat({ agentName = 'default', system, userMessage, o
     setTimeout(() => {
       if (!settled) {
         proc.kill();
-        finish(new Error('claude timeout (5min)'), null);
+        finish(new Error('claude timeout (5min)'), null, null);
       }
     }, 5 * 60 * 1000);
-  }).then(async result => {
+  }).then(async out => {
     // Handle context overflow: compact first, then retry with summary
-    if (typeof result === 'string' && result.startsWith('__COMPACT__')) {
-      const overflowSessionId = result.slice('__COMPACT__'.length);
+    if (out && out.result && out.result.startsWith('__COMPACT__')) {
+      const overflowSessionId = out.result.slice('__COMPACT__'.length);
       console.log(`[claude-proxy] Compacting session for ${agentName}...`);
 
       const summary = await compactSession(agentName, overflowSessionId);
@@ -239,6 +246,6 @@ export async function streamChat({ agentName = 'default', system, userMessage, o
       console.log(`[claude-proxy] Session compacted for ${agentName}, resuming task...`);
       return streamChat({ agentName, system: compactedSystem, userMessage, onDelta, _retry: true });
     }
-    return result;
+    return out;
   });
 }
