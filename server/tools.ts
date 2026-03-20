@@ -22,6 +22,7 @@ const EXEC_WHITELIST = [
   'git', 'ls', 'cat', 'mkdir', 'rm', 'cp', 'mv', 'touch',
   'echo', 'pwd', 'find', 'grep', 'which', 'env', 'curl',
   'tsc', 'ts-node', 'jest', 'vitest', 'mocha', 'pytest',
+  'cd', 'sed', 'awk', 'wc', 'head', 'tail', 'sort', 'uniq',
 ];
 
 function resolvePath(filePath: string, workspace: string): string {
@@ -38,13 +39,28 @@ interface Tool {
 
 export const tools: Record<string, Tool> = {
   readFile: {
-    description: 'Read file contents. Path is relative to workspace or absolute.',
+    description: 'Read file contents. Format: "path" or "path:startLine-endLine" (1-based, inclusive). Max 300 lines or 20KB per call.',
     execute: async (args, workspace) => {
-      const filePath = resolvePath(args.trim(), workspace);
+      const raw = args.trim();
+      // Support "path:start-end" for line ranges
+      const rangeMatch = raw.match(/^(.+):(\d+)-(\d+)$/);
+      const filePath = resolvePath(rangeMatch ? rangeMatch[1] : raw, workspace);
       if (!fs.existsSync(filePath)) return `Error: File not found: ${filePath}`;
       try {
         const content = fs.readFileSync(filePath, 'utf8');
-        return content.slice(0, 10000); // max 10KB per read
+        const lines = content.split('\n');
+        if (rangeMatch) {
+          const start = Math.max(1, parseInt(rangeMatch[2])) - 1;
+          const end = Math.min(lines.length, parseInt(rangeMatch[3]));
+          const slice = lines.slice(start, end).join('\n');
+          return `[Lines ${start + 1}-${end} of ${lines.length}]\n${slice.slice(0, 20000)}`;
+        }
+        // Default: first 300 lines or 20KB
+        const preview = lines.slice(0, 300).join('\n');
+        const out = preview.slice(0, 20000);
+        return lines.length > 300
+          ? `[Lines 1-300 of ${lines.length} — use "path:startLine-endLine" to read more]\n${out}`
+          : out;
       } catch (err) {
         return `Error reading file: ${(err as Error).message}`;
       }
@@ -193,7 +209,8 @@ You can interact with the filesystem and run commands using these tools.
 Place tool calls anywhere in your response — they will be executed and results injected back.
 
 Available tools:
-- [TOOL:readFile]path/to/file[/TOOL]           — read a file
+- [TOOL:readFile]path/to/file[/TOOL]            — read a file (first 300 lines)
+- [TOOL:readFile]path/to/file:50-120[/TOOL]     — read lines 50–120 of a file
 - [TOOL:writeFile]path/to/file                  — write a file (path on first line, content after)
 content goes here
 [/TOOL]

@@ -10,6 +10,7 @@ import { retrieveRelevantMemory } from './memory-rag.js';
 import type { Thread } from './types.js';
 import fs from 'fs';
 import path from 'path';
+import { spawn } from 'child_process';
 
 // Get or create a per-task workspace directory
 function getWorkspace(taskId: string): string {
@@ -65,7 +66,7 @@ async function runToolLoop({
   initialMessages = [],
   workspace,
   sessionKey,
-  maxIters = 10,
+  maxIters = 25,
   onDelta,
   onToolStart,
   onToolEnd,
@@ -558,6 +559,31 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
     thread.fileSnapshot = afterSnapshot;
     if (fileChanges.length > 0) {
       pushGroupMsg('file-changes', agentName, fileChanges.join('\n'), { threadId, groupId: threadGroupId });
+    }
+
+    // ── Auto type-check: run tsc --noEmit if tsconfig.json exists ──────────
+    // On failure: git stash the bad changes and inject error into next turn context
+    if (fileChanges.length > 0 && fs.existsSync(path.join(workspace, 'tsconfig.json'))) {
+      const tscResult = await new Promise<string>((resolve) => {
+        const proc = spawn('sh', ['-c', 'npx tsc --noEmit 2>&1'], { cwd: workspace, env: process.env });
+        let out = '';
+        proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+        proc.stderr.on('data', (d: Buffer) => { out += d.toString(); });
+        proc.on('close', (code: number | null) => resolve(code === 0 ? '' : out.slice(0, 3000)));
+        proc.on('error', () => resolve(''));
+      });
+      if (tscResult) {
+        // Type errors found — stash the changes and notify
+        await new Promise<void>((resolve) => {
+          const proc = spawn('sh', ['-c', 'git stash'], { cwd: workspace, env: process.env });
+          proc.on('close', () => resolve());
+          proc.on('error', () => resolve());
+        });
+        const errNote = `[Type check failed — changes stashed]\n${tscResult}`;
+        pushGroupMsg('file-changes', agentName, errNote, { threadId, groupId: threadGroupId });
+        // Inject into thread context so next agent knows about the failure
+        thread.lastChanges = [errNote];
+      }
     }
 
     // ── History summarization ────────────────────────────────────────────────
