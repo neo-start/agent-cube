@@ -117,10 +117,12 @@ setInterval(() => {
 // ── Watchdog: reset stuck agents after 8 minutes ─────────────────────────────
 setInterval(() => {
   const now = Date.now();
-  for (const [, a] of Object.entries(state.agents)) {
+  for (const [name, a] of Object.entries(state.agents)) {
     if (a.status === 'working' && a._startedAt && (now - a._startedAt) > 8 * 60 * 1000) {
       a.status = 'blocked';
       a.latestLog = 'Timed out (8 min)';
+      saveTasksState(state.tasks);
+      dequeueAgentTask(name);
       broadcast();
     }
   }

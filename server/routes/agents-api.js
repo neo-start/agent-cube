@@ -2,7 +2,9 @@ import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { DATA_DIR } from '../config.js';
-import { loadAgentRegistry } from '../registry.js';
+import { loadAgentRegistry, clearRegistryCache } from '../registry.js';
+import { state, agentTaskQueues } from '../state.js';
+import { AgentTaskQueue } from '../agent-queue.js';
 
 const AGENTS_FILE = path.join(DATA_DIR, 'agents.json');
 const router = Router();
@@ -35,9 +37,10 @@ router.post('/agents', (req, res) => {
   data.agents.push(agent);
   fs.writeFileSync(AGENTS_FILE, JSON.stringify(data, null, 2));
 
-  // Invalidate registry cache by clearing module-level cache via a re-export trick
-  // (The registry uses a module-level _cache variable; a server restart is needed for
-  //  the new agent to appear in the in-process registry. The file is updated immediately.)
+  clearRegistryCache();
+  state.agents[name] = { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null };
+  agentTaskQueues[name] = new AgentTaskQueue(name, 20);
+
   res.status(201).json({ ok: true, agent });
 });
 
@@ -57,8 +60,14 @@ router.delete('/agents/:name', (req, res) => {
   const idx = data.agents.findIndex(a => a.name === req.params.name);
   if (idx === -1) return res.status(404).json({ ok: false, error: 'Agent not found' });
 
+  const deletedName = req.params.name;
   data.agents.splice(idx, 1);
   fs.writeFileSync(AGENTS_FILE, JSON.stringify(data, null, 2));
+
+  clearRegistryCache();
+  delete state.agents[deletedName];
+  delete agentTaskQueues[deletedName];
+
   res.json({ ok: true });
 });
 

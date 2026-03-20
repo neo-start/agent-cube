@@ -1,4 +1,5 @@
-import { state, broadcast, broadcastGroup, pushGroupMsg, dequeueAgentTask, persistQueues, agentTaskQueues, saveTasksState } from './state.js';
+import { state, broadcast, pushGroupMsg, dequeueAgentTask, persistQueues, agentTaskQueues, saveTasksState } from './state.js';
+import { getGroupBus } from './group-bus.js';
 import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, appendLongTermMemory, appendInbox, readInbox, clearInbox, saveThread } from './memory.js';
 import { parseToolCalls, executeToolCalls, TOOL_PROTOCOL } from './tools.js';
 import { WORKSPACES_DIR } from './config.js';
@@ -125,7 +126,7 @@ async function runAgent(agentName, taskId, description) {
           if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
           if (streamMsg) {
             streamMsg.content = result;
-            broadcastGroup({ ...streamMsg, partial: true });
+            getGroupBus(groupId).emit({ ...streamMsg, partial: true });
           }
           broadcast();
         });
@@ -152,7 +153,7 @@ async function runAgent(agentName, taskId, description) {
           if (state.tasks[taskId]) state.tasks[taskId].latestLog = agent.latestLog;
           if (streamMsg) {
             streamMsg.content = accumulated;
-            broadcastGroup({ ...streamMsg, partial: true });
+            getGroupBus(groupId).emit({ ...streamMsg, partial: true });
           }
           broadcast();
         });
@@ -181,7 +182,7 @@ async function runAgent(agentName, taskId, description) {
       streamMsg.type = 'reply';
       streamMsg.content = result;
       streamMsg.status = 'done';
-      broadcastGroup(streamMsg);
+      getGroupBus(groupId).emit(streamMsg);
     }
     logTask(taskId, { ...state.tasks[taskId], completedAt: new Date().toISOString() });
     broadcast();
@@ -192,7 +193,7 @@ async function runAgent(agentName, taskId, description) {
       streamMsg.type = 'reply';
       streamMsg.content = `Error: ${err.message}`;
       streamMsg.status = 'error';
-      broadcastGroup(streamMsg);
+      getGroupBus(groupId).emit(streamMsg);
     }
     if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
     broadcast();
@@ -428,7 +429,7 @@ export async function runAgentInThread(agentName, threadId) {
           result = accumulated;
           agent.latestLog = result.slice(-800);
           streamMsg.content = result;
-          broadcastGroup({ ...streamMsg, partial: true });
+          getGroupBus(threadId).emit({ ...streamMsg, partial: true });
           broadcast();
         });
         result = out.result;
@@ -448,7 +449,7 @@ export async function runAgentInThread(agentName, threadId) {
           result = accumulated;
           agent.latestLog = result.slice(-800);
           streamMsg.content = accumulated;
-          broadcastGroup({ ...streamMsg, partial: true });
+          getGroupBus(threadId).emit({ ...streamMsg, partial: true });
           broadcast();
         });
         result = out.result;
@@ -470,7 +471,7 @@ export async function runAgentInThread(agentName, threadId) {
     streamMsg.type = 'reply';
     streamMsg.content = result;
     streamMsg.status = 'done';
-    broadcastGroup(streamMsg);
+    getGroupBus(threadId).emit(streamMsg);
 
     agent.status = 'idle';
     broadcast();
@@ -501,7 +502,7 @@ export async function runAgentInThread(agentName, threadId) {
     streamMsg.type = 'reply';
     streamMsg.content = `Error: ${err.message}`;
     streamMsg.status = 'error';
-    broadcastGroup(streamMsg);
+    getGroupBus(threadId).emit(streamMsg);
     broadcast();
   }
 }

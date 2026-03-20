@@ -5,6 +5,7 @@ import { loadGroupRegistry, getGroup, createGroup, updateGroup, deleteGroup, get
 import { loadGroupMessagesForGroup } from '../memory.js';
 import { scheduleAgent, createThread, runAgentInThread, resumeThread } from '../agents.js';
 import { orchestrate } from '../orchestration.js';
+import { getAllAgentNames } from '../registry.js';
 
 const router = Router();
 
@@ -122,7 +123,11 @@ export function handleSend(req, res) {
   const { text, target, attachments, threadId } = req.body;
   if (!text) return res.status(400).json({ ok: false, error: 'Missing text' });
 
-  let prompt = text.replace(/@(Claw|Deep)\b/gi, '').trim();
+  const agentNames = getAllAgentNames();
+  const agentNamesPattern = agentNames.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  const mentionRegex = new RegExp(`@(${agentNamesPattern})\\b`, 'gi');
+
+  let prompt = text.replace(mentionRegex, '').trim();
   if (attachments && attachments.length > 0) {
     prompt += '\n\nATTACHMENTS:\n' + attachments.map(a => `- ${a.name} [${a.type}]: ${a.url}`).join('\n');
   }
@@ -136,7 +141,7 @@ export function handleSend(req, res) {
 
   pushGroupMsg('user', 'User', text, { target: target || null, attachments: attachments || [], groupId });
 
-  const mentions = [...text.matchAll(/@(Claw|Deep)\b/gi)].map(m =>
+  const mentions = [...text.matchAll(mentionRegex)].map(m =>
     m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase()
   );
   const uniqueMentions = [...new Set(mentions)];
@@ -152,7 +157,7 @@ export function handleSend(req, res) {
   // ── Single agent explicitly @mentioned ───────────────────────────────────
   const agent = target || (uniqueMentions.length === 1 ? uniqueMentions[0] : null);
 
-  if (agent === 'Claw' || agent === 'Deep') {
+  if (agentNames.includes(agent)) {
     const taskId = `task-${++state.taskCounter}-${Date.now()}`;
     const agentState = state.agents[agent];
     const isQueued = agentState.status === 'working';

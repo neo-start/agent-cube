@@ -37,3 +37,7 @@ export function getAgentConfig(name) {
 export function getAllAgentNames() {
   return loadAgentRegistry().map(a => a.name);
 }
+
+export function clearRegistryCache() {
+  _cache = null;
+}
