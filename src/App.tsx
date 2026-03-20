@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Scene } from './components/Scene';
 import { GroupChat } from './components/GroupChat';
-import { GroupSidebar } from './components/GroupSidebar';
 import { CreateGroupModal } from './components/CreateGroupModal';
 import { TokenDashboard } from './components/TokenDashboard';
 import { useTasks } from './hooks/useTasks';
@@ -71,12 +70,6 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', overflow: 'hidden', background: theme.bg }}>
-      {/* Left sidebar — G button only */}
-      <GroupSidebar
-        isGroupChatOpen={groupChatOpen}
-        onToggleGroupChat={() => setGroupChatOpen(o => !o)}
-      />
-
       {/* Main area */}
       <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         {/* 3D Scene */}
