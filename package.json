@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"node server/index.js\" \"vite\"",
-    "build": "tsc && vite build",
-    "start": "node server/index.js"
+    "dev": "concurrently \"tsx watch server/index.ts\" \"vite\"",
+    "build": "tsc -p server/tsconfig.json && tsc && vite build",
+    "start": "tsx server/index.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
@@ -20,11 +20,16 @@
     "three": "^0.170.0"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.1.0",
+    "@types/node": "^25.5.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/three": "^0.170.0",
     "@vitejs/plugin-react": "^4.3.3",
     "concurrently": "^9.1.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vite": "^5.4.10"
   }
