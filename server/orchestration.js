@@ -1,5 +1,5 @@
 import { state, broadcast } from './state.js';
-import { runClaw, runDeep, PERSONAS } from './agents.js';
+import { scheduleAgent, PERSONAS } from './agents.js';
 
 export function watchSingleTask(orchestrationId, taskId, resultKey) {
   const iv = setInterval(() => {
@@ -124,14 +124,14 @@ export async function orchestrate(orchestrationId, description) {
     const taskId = `task-${state.taskCounter}-${Date.now()}`;
     state.tasks[taskId] = { id: taskId, agent: 'Claw', description, by: 'Orchestrator', status: 'working', latestLog: null, result: null, delegatedBy: null, parentTaskId: null, source: 'orchestrate', createdAt: new Date().toISOString() };
     state.orchestrations[orchestrationId].clawTaskId = taskId;
-    runClaw(taskId, description);
+    scheduleAgent('Claw', taskId, description);
     watchSingleTask(orchestrationId, taskId, 'clawResult');
   } else if (routing.route === 'Deep') {
     state.taskCounter++;
     const taskId = `task-${state.taskCounter}-${Date.now()}`;
     state.tasks[taskId] = { id: taskId, agent: 'Deep', description, by: 'Orchestrator', status: 'working', latestLog: null, result: null, delegatedBy: null, parentTaskId: null, source: 'orchestrate', createdAt: new Date().toISOString() };
     state.orchestrations[orchestrationId].deepTaskId = taskId;
-    runDeep(taskId, description);
+    scheduleAgent('Deep', taskId, description);
     watchSingleTask(orchestrationId, taskId, 'deepResult');
   } else {
     const clawDesc = routing.clawTask || description;
@@ -148,8 +148,8 @@ export async function orchestrate(orchestrationId, description) {
     state.orchestrations[orchestrationId].clawTaskId = clawTaskId;
     state.orchestrations[orchestrationId].deepTaskId = deepTaskId;
 
-    runClaw(clawTaskId, clawDesc);
-    runDeep(deepTaskId, deepDesc);
+    scheduleAgent('Claw', clawTaskId, clawDesc);
+    scheduleAgent('Deep', deepTaskId, deepDesc);
     watchBothTasks(orchestrationId, clawTaskId, deepTaskId, description);
   }
 }

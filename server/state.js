@@ -1,8 +1,10 @@
 import { eventBus } from './event-bus.js';
-import { appendGroupMessage, loadGroupMessages, trimGroupMessagesFile, saveQueuedTasks } from './memory.js';
+import { appendGroupMessage, loadGroupMessages, trimGroupMessagesFile, saveQueuedTasks, loadTasksState, saveTasksState } from './memory.js';
+export { saveTasksState };
 
-// ── Initial state — groupMessages pre-loaded from disk ────────────────────────
+// ── Initial state — pre-loaded from disk ─────────────────────────────────────
 const persistedMessages = loadGroupMessages();
+const persistedTasks = loadTasksState();
 
 export const state = {
   agents: {
@@ -10,7 +12,7 @@ export const state = {
     Deep: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null },
     Orchestrator: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null },
   },
-  tasks: {},
+  tasks: persistedTasks,
   messages: [],
   groupMessages: persistedMessages,
   taskCounter: 0,
@@ -54,7 +56,9 @@ export function enqueueAgentTask(agentName, taskFn, meta = null) {
 export function dequeueAgentTask(agentName) {
   const next = agentQueues[agentName].shift();
   agentQueueMeta[agentName].shift(); // keep in sync
-  saveQueuedTasks(agentQueueMeta);
+  // Only write to disk if there are still queued tasks
+  const hasQueued = Object.values(agentQueueMeta).some(q => q.length > 0);
+  if (hasQueued) saveQueuedTasks(agentQueueMeta);
   if (next) next();
 }
 

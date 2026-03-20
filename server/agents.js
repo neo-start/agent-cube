@@ -1,4 +1,4 @@
-import { state, broadcast, broadcastGroup, pushGroupMsg, dequeueAgentTask, enqueueAgentTask } from './state.js';
+import { state, broadcast, broadcastGroup, pushGroupMsg, dequeueAgentTask, enqueueAgentTask, saveTasksState } from './state.js';
 import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, loadLongTermMemory, appendLongTermMemory, appendInbox, readInbox, clearInbox, saveThread } from './memory.js';
 import { streamChat } from './claude-proxy.js';
 import { parseToolCalls, executeToolCalls, TOOL_PROTOCOL } from './tools.js';
@@ -236,7 +236,7 @@ export async function runClaw(taskId, description) {
     if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
     broadcast();
   } finally {
-    // Run next queued task if any
+    saveTasksState(state.tasks);
     dequeueAgentTask('Claw');
   }
 }
@@ -361,7 +361,7 @@ export async function runDeep(taskId, description) {
     if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
     broadcast();
   } finally {
-    // Run next queued task if any
+    saveTasksState(state.tasks);
     dequeueAgentTask('Deep');
   }
 }

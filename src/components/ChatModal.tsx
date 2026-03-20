@@ -18,6 +18,7 @@ interface Props {
   inline?: boolean;
 }
 
+const API = '';
 const STORAGE_KEY = (agentName: string) => `agent-cube-chat-${agentName}`;
 
 function loadMessages(agentName: string): ChatMessage[] {
@@ -143,6 +144,8 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
   const pollRef = useRef<number | null>(null);
   const orchPollRef = useRef<number | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const isNearBottomRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -151,9 +154,17 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
     saveMessages(agent.name, messages);
   }, [messages, agent.name]);
 
-  // Scroll to bottom on new messages
+  // Smart scroll: only auto-scroll if user is near the bottom
+  const handleChatScroll = useCallback(() => {
+    const el = chatScrollRef.current;
+    if (!el) return;
+    isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }, []);
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (isNearBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages]);
 
   // Focus input on open
@@ -169,7 +180,7 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
   const scheduleIdleReset = useCallback(() => {
     setTimeout(async () => {
       try {
-        await fetch('/api/status', {
+        await fetch(`${API}/api/status`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ agent: agent.name, status: 'idle' }),
@@ -185,31 +196,10 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
 
     pollRef.current = window.setInterval(async () => {
       try {
-        // Poll the specific task by ID for accurate status
-        const res = await fetch(`/api/tasks/${taskId}`);
-        if (!res.ok) {
-          // Fallback to agent status if task endpoint not available
-          const r2 = await fetch('/api/tasks');
-          const d2 = await r2.json();
-          const agentData = d2.agents?.[agent.name];
-          if (agentData?.taskId === taskId) {
-            if (agentData.status === 'done') {
-              updateMessage(msgId, { text: agentData.raw || agentData.latestLog || '(Done)', status: 'done' });
-              setSending(false);
-              pendingTaskRef.current = null;
-              if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-              scheduleIdleReset();
-            } else if (agentData.status === 'blocked') {
-              updateMessage(msgId, { text: agentData.latestLog || 'Task failed', status: 'error' });
-              setSending(false);
-              pendingTaskRef.current = null;
-              if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-            } else if (agentData.status === 'working' && agentData.latestLog) {
-              updateMessage(msgId, { text: agentData.latestLog, status: 'thinking' });
-            }
-          }
-          return;
-        }
+        // Poll ONLY the specific task by ID — never fall back to global agent state
+        // to prevent cross-contamination between different callers (UI vs API)
+        const res = await fetch(`${API}/api/tasks/${taskId}`);
+        if (!res.ok) return; // task endpoint unavailable, just wait
         const task = await res.json();
         if (task.status === 'done') {
           updateMessage(msgId, { text: task.result || task.latestLog || '(Done)', status: 'done' });
@@ -236,7 +226,7 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
 
     orchPollRef.current = window.setInterval(async () => {
       try {
-        const res = await fetch(`/api/orchestrate/${orchestrationId}`);
+        const res = await fetch(`${API}/api/orchestrate/${orchestrationId}`);
         const data = await res.json();
         if (!data.ok) return;
 
@@ -280,21 +270,26 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
     };
   }, []);
 
-  const handleFiles = async (files: FileList) => {
+  const handleFiles = async (fileList: FileList) => {
+    // Snapshot files before resetting input (reset invalidates FileList reference)
+    const rawFiles = Array.from(fileList);
     const formData = new FormData();
-    Array.from(files).forEach(f => formData.append('files', f));
-    // Reset file input so the same file can be selected again
+    rawFiles.forEach(f => formData.append('files', f));
     if (fileInputRef.current) fileInputRef.current.value = '';
     try {
-      const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      const res = await fetch(`${API}/api/upload`, { method: 'POST', body: formData });
+      if (!res.ok) throw new Error(`Upload HTTP ${res.status}`);
       const data = await res.json();
+      if (!data.ok || !data.files) throw new Error('Upload response invalid');
       const uploaded: UploadedFile[] = data.files.map((f: UploadedFile, i: number) => ({
         ...f,
-        localPreview: files[i].type.startsWith('image/') ? URL.createObjectURL(files[i]) : undefined,
+        url: f.url.startsWith('http') ? f.url : `${API}${f.url}`,
+        localPreview: rawFiles[i]?.type?.startsWith('image/') ? URL.createObjectURL(rawFiles[i]) : undefined,
       }));
       setAttachments(prev => [...prev, ...uploaded]);
     } catch (e) {
       console.error('Upload failed:', e);
+      alert(`Upload failed: ${e instanceof Error ? e.message : 'unknown error'}`);
     }
   };
 
@@ -319,7 +314,7 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
 
     if (autoMode) {
       try {
-        const res = await fetch('/api/orchestrate', {
+        const res = await fetch(`${API}/api/orchestrate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ description: text, by: 'Neo' }),
@@ -336,7 +331,7 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
     }
 
     try {
-      const res = await fetch('/api/tasks/assign', {
+      const res = await fetch(`${API}/api/tasks/assign`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent: agent.name, description: text, by: 'Neo', attachments }),
@@ -362,7 +357,7 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
       setMessages([]);
       localStorage.removeItem(STORAGE_KEY(agent.name));
       try {
-        await fetch(`/api/memory/${agent.name}`, { method: 'DELETE' });
+        await fetch(`${API}/api/memory/${agent.name}`, { method: 'DELETE' });
       } catch {}
     }
   };
@@ -414,6 +409,8 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
 
         {/* Message list */}
         <div
+          ref={chatScrollRef}
+          onScroll={handleChatScroll}
           style={{
             flex: 1, overflowY: 'auto', padding: '16px 18px',
             display: 'flex', flexDirection: 'column', gap: 12,
@@ -593,7 +590,7 @@ export function ChatModal({ agent, onClose, inline = false }: Props) {
             style={{ width: 40, height: 40, borderRadius: 10, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#6b7280', cursor: 'pointer', fontSize: 16, flexShrink: 0 }}>
             📎
           </button>
-          <input ref={fileInputRef} type="file" multiple accept="image/*,.pdf,.txt,.js,.ts,.json,.md,.py,.csv"
+          <input ref={fileInputRef} type="file" multiple
             style={{ display: 'none' }} onChange={e => e.target.files && handleFiles(e.target.files)} />
           <button
             onClick={send}

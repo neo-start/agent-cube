@@ -19,8 +19,9 @@ export const SOULS_DIR = path.join(DATA_DIR, 'souls');
 export const LONG_TERM_DIR = path.join(DATA_DIR, 'memory', 'long-term');
 export const INBOX_DIR = path.join(DATA_DIR, 'inboxes');
 export const THREADS_DIR = path.join(DATA_DIR, 'threads');
+export const WORKSPACES_DIR = path.join(DATA_DIR, 'workspaces');
 
-[DATA_DIR, MEMORY_DIR, LOGS_DIR, UPLOADS_DIR, SOULS_DIR, LONG_TERM_DIR, INBOX_DIR, THREADS_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
+[DATA_DIR, MEMORY_DIR, LOGS_DIR, UPLOADS_DIR, SOULS_DIR, LONG_TERM_DIR, INBOX_DIR, THREADS_DIR, WORKSPACES_DIR].forEach(d => fs.mkdirSync(d, { recursive: true }));
 
 const storage = multer.diskStorage({
   destination: UPLOADS_DIR,
@@ -30,4 +31,4 @@ const storage = multer.diskStorage({
   }
 });
 
-export const upload = multer({ storage, limits: { fileSize: 20 * 1024 * 1024, files: 10 } });
+export const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024, files: 10 } });

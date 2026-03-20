@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { state, broadcast } from '../state.js';
-import { runClaw, runDeep } from '../agents.js';
+import { scheduleAgent } from '../agents.js';
 
 const router = Router();
 
@@ -80,8 +80,7 @@ router.post('/tasks/assign', (req, res) => {
     attachments: attachments || [],
   };
 
-  if (agent === 'Claw') runClaw(taskId, prompt);
-  else if (agent === 'Deep') runDeep(taskId, prompt);
+  scheduleAgent(agent, taskId, prompt);
 
   res.json({ ok: true, taskId, action: 'assigned' });
 });
@@ -110,8 +109,7 @@ router.post('/tasks/delegate', (req, res) => {
     createdAt: new Date().toISOString(),
   };
 
-  if (toAgent === 'Claw') runClaw(taskId, description);
-  else if (toAgent === 'Deep') runDeep(taskId, description);
+  scheduleAgent(toAgent, taskId, description);
 
   res.json({ ok: true, taskId, action: 'delegated' });
 });

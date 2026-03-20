@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { state, pushGroupMsg, enqueueAgentTask } from '../state.js';
+import { state, pushGroupMsg } from '../state.js';
 import { eventBus } from '../event-bus.js';
-import { runClaw, runDeep, createThread, runAgentInThread, resumeThread } from '../agents.js';
+import { scheduleAgent, createThread, runAgentInThread, resumeThread } from '../agents.js';
 import { orchestrate } from '../orchestration.js';
 import { listThreads } from '../memory.js';
 
@@ -83,34 +83,25 @@ router.post('/group/send', (req, res) => {
   const agent = target || (uniqueMentions.length === 1 ? uniqueMentions[0] : null);
 
   if (agent === 'Claw' || agent === 'Deep') {
-    const agentState = state.agents[agent];
     const taskId = `task-${++state.taskCounter}-${Date.now()}`;
+    const agentState = state.agents[agent];
+    const isQueued = agentState.status === 'working';
     state.tasks[taskId] = {
       id: taskId, agent, description: prompt, by: 'User',
-      status: 'working', latestLog: null, result: null,
+      status: isQueued ? 'queued' : 'working', latestLog: null, result: null,
       delegatedBy: null, parentTaskId: null, source: 'group',
       createdAt: new Date().toISOString(), attachments: attachments || [],
     };
 
-    const runTask = () => {
-      state.tasks[taskId].status = 'working';
-      if (agent === 'Claw') runClaw(taskId, prompt);
-      else runDeep(taskId, prompt);
-    };
-
-    // If agent is busy, queue the task and immediately send status
-    if (agentState.status === 'working') {
-      state.tasks[taskId].status = 'queued';
+    if (isQueued) {
       const currentLog = agentState.latestLog?.slice(0, 80) || '...';
       pushGroupMsg('status', agent,
         `收到，排队中。当前正在执行：${currentLog}`,
         { status: 'queued', taskId }
       );
-      enqueueAgentTask(agent, runTask, { taskId, agent, description: prompt, createdAt: new Date().toISOString() });
-    } else {
-      runTask();
     }
 
+    scheduleAgent(agent, taskId, prompt);
     return res.json({ ok: true, taskId });
   }
 

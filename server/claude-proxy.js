@@ -48,7 +48,67 @@ async function saveSessionId(agentName, sessionId) {
  * @param {Function} [opts.onDelta]            - 每次有新 token 时回调：(delta, accumulated)
  * @returns {Promise<string>}                  - 完整回复文本
  */
-export async function streamChat({ agentName = 'default', system, userMessage, onDelta }) {
+// Detect context window overflow errors from claude CLI
+function isContextOverflow(errText) {
+  return /context.*(window|length|limit)|too (long|large)|token.*limit|prompt.*too|maximum.*token/i.test(errText);
+}
+
+/**
+ * Compact the current session: ask Claude to summarize the conversation,
+ * then clear the session so the next call starts fresh with the summary.
+ * Returns the summary string (empty string on failure).
+ */
+async function compactSession(agentName, sessionId) {
+  const COMPACT_PROMPT = [
+    'Please provide a detailed summary of our conversation so far.',
+    'Include: what task we were working on, what has been accomplished, key decisions made,',
+    'code or files created/modified, and what still needs to be done.',
+    'Be thorough — this summary will be used to resume work in a new session.',
+  ].join(' ');
+
+  const cmd = [
+    '--print',
+    '--output-format', 'stream-json',
+    '--verbose',
+    '--dangerously-skip-permissions',
+    '--resume', sessionId,
+    COMPACT_PROMPT,
+  ];
+  if (CLAUDE_MODEL) cmd.push('--model', CLAUDE_MODEL);
+
+  return new Promise((resolve) => {
+    const proc = spawn(CLAUDE_BIN, cmd, {
+      env: { ...process.env, CLAUDECODE: undefined, CLAUDE_SESSION_ID: undefined },
+    });
+    let summary = '';
+    let lastLen = 0;
+    let settled = false;
+    const finish = (s) => { if (!settled) { settled = true; resolve(s); } };
+
+    proc.stdout.on('data', (chunk) => {
+      for (const line of chunk.toString().split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let event;
+        try { event = JSON.parse(trimmed); } catch { continue; }
+        if (event.type === 'assistant') {
+          const parts = event.message?.content || [];
+          let fullText = '';
+          for (const p of parts) { if (p?.type === 'text') fullText += p.text; }
+          if (fullText.length > lastLen) { summary = fullText; lastLen = fullText.length; }
+        } else if (event.type === 'result') {
+          finish(summary || event.result || '');
+        }
+      }
+    });
+
+    proc.on('error', () => finish(''));
+    proc.on('close', () => finish(summary));
+    setTimeout(() => { proc.kill(); finish(summary); }, 60_000); // 1 min timeout
+  });
+}
+
+export async function streamChat({ agentName = 'default', system, userMessage, onDelta, _retry = false, _compactedSummary = null }) {
   // 懒加载 session id
   if (!sessions[agentName]) {
     sessions[agentName] = await loadSessionId(agentName);
@@ -115,9 +175,16 @@ export async function streamChat({ agentName = 'default', system, userMessage, o
         } else if (type === 'result') {
           if (event.is_error) {
             const err = event.result || (event.errors || []).join(', ') || 'unknown error';
-            // session 找不到时清除，下次重新建
             if (/no conversation|session/i.test(err)) {
+              // Session not found — clear and let next call start fresh
               sessions[agentName] = null;
+              saveSessionId(agentName, '');
+            } else if (isContextOverflow(err) && !_retry) {
+              // Context window full — compact first, then retry with summary
+              console.warn(`[claude-proxy] Context overflow for ${agentName}, compacting session...`);
+              const overflowSessionId = sessions[agentName];
+              finish(null, `__COMPACT__${overflowSessionId}`);
+              return;
             }
             if (!accumulated) finish(new Error(`Claude error: ${err}`), null);
             else finish(null, accumulated);
@@ -153,5 +220,25 @@ export async function streamChat({ agentName = 'default', system, userMessage, o
         finish(new Error('claude timeout (5min)'), null);
       }
     }, 5 * 60 * 1000);
+  }).then(async result => {
+    // Handle context overflow: compact first, then retry with summary
+    if (typeof result === 'string' && result.startsWith('__COMPACT__')) {
+      const overflowSessionId = result.slice('__COMPACT__'.length);
+      console.log(`[claude-proxy] Compacting session for ${agentName}...`);
+
+      const summary = await compactSession(agentName, overflowSessionId);
+
+      // Clear the overflowed session
+      sessions[agentName] = null;
+      await saveSessionId(agentName, '');
+
+      const compactedSystem = system
+        ? `${system}\n\n## Compacted Context\nThe following is a summary of the previous conversation that was compacted due to context window limits:\n\n${summary}`
+        : `## Compacted Context\nThe following is a summary of the previous conversation:\n\n${summary}`;
+
+      console.log(`[claude-proxy] Session compacted for ${agentName}, resuming task...`);
+      return streamChat({ agentName, system: compactedSystem, userMessage, onDelta, _retry: true });
+    }
+    return result;
   });
 }

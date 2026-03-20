@@ -3,8 +3,8 @@ import cors from 'cors';
 import { join } from 'path';
 import { __dirname, PORT, UPLOADS_DIR } from './config.js';
 import { loadQueuedTasks, clearQueuedTasks } from './memory.js';
-import { state, agentQueues, agentQueueMeta } from './state.js';
-import { scheduleAgent } from './agents.js';
+import { state, agentQueues, agentQueueMeta, dequeueAgentTask } from './state.js';
+import { scheduleAgent, runClaw, runDeep } from './agents.js';
 
 // Routes
 import tasksRouter from './routes/tasks.js';
@@ -17,7 +17,7 @@ import scratchpadRouter from './routes/scratchpad.js';
 import uploadRouter from './routes/upload.js';
 
 // ── Restore queued tasks from disk on startup ─────────────────────────────────
-(function restoreQueues() {
+(async function restoreQueues() {
   const saved = loadQueuedTasks();
   let restored = 0;
   for (const [agentName, tasks] of Object.entries(saved)) {
@@ -31,7 +31,8 @@ import uploadRouter from './routes/upload.js';
           result: null, source: 'group', createdAt: meta.createdAt || new Date().toISOString(),
         };
       }
-      const run = () => scheduleAgent(meta.agent, meta.taskId, meta.description);
+      // run() calls runClaw/runDeep directly — bypasses scheduleAgent to avoid re-enqueue
+      const run = () => meta.agent === 'Claw' ? runClaw(meta.taskId, meta.description) : runDeep(meta.taskId, meta.description);
       agentQueues[agentName] = agentQueues[agentName] || [];
       agentQueueMeta[agentName] = agentQueueMeta[agentName] || [];
       agentQueues[agentName].push(run);
@@ -39,8 +40,15 @@ import uploadRouter from './routes/upload.js';
       restored++;
     }
   }
-  if (restored > 0) console.log(`[startup] Restored ${restored} queued task(s)`);
-  else clearQueuedTasks();
+  if (restored > 0) {
+    console.log(`[startup] Restored ${restored} queued task(s)`);
+    // Kick off the first task for each agent that has queued work
+    for (const agentName of Object.keys(agentQueues)) {
+      if (agentQueues[agentName]?.length > 0) {
+        dequeueAgentTask(agentName);
+      }
+    }
+  } else clearQueuedTasks();
 })();
 
 const app = express();

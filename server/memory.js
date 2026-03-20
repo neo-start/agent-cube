@@ -1,6 +1,96 @@
 import fs from 'fs';
 import path from 'path';
-import { MEMORY_DIR, LOGS_DIR, SCRATCHPAD_FILE, SOULS_DIR, LONG_TERM_DIR, INBOX_DIR, THREADS_DIR } from './config.js';
+import { MEMORY_DIR, LOGS_DIR, SCRATCHPAD_FILE, SOULS_DIR, LONG_TERM_DIR, INBOX_DIR, THREADS_DIR, DATA_DIR } from './config.js';
+
+const GROUP_MESSAGES_FILE = path.join(DATA_DIR, 'group-messages.jsonl');
+const QUEUED_TASKS_FILE = path.join(DATA_DIR, 'queued-tasks.json');
+const TASKS_STATE_FILE = path.join(DATA_DIR, 'tasks-state.json');
+const GROUP_MESSAGES_LIMIT = 500;
+const TASKS_KEEP_RECENT = 200; // max tasks to keep in snapshot
+
+// ── Task state persistence ─────────────────────────────────────────────────────
+
+export function saveTasksState(tasks) {
+  try {
+    // Keep only recent tasks (by createdAt), skip ones with no status
+    const all = Object.values(tasks).filter(t => t && t.id);
+    const sorted = all.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const recent = sorted.slice(0, TASKS_KEEP_RECENT);
+    const obj = Object.fromEntries(recent.map(t => [t.id, t]));
+    fs.writeFileSync(TASKS_STATE_FILE, JSON.stringify(obj, null, 2));
+  } catch {}
+}
+
+export function loadTasksState() {
+  try {
+    if (!fs.existsSync(TASKS_STATE_FILE)) return {};
+    const tasks = JSON.parse(fs.readFileSync(TASKS_STATE_FILE, 'utf8'));
+    // Mark any "working" tasks as "blocked" — they were interrupted by restart
+    for (const task of Object.values(tasks)) {
+      if (task.status === 'working') {
+        task.status = 'blocked';
+        task.latestLog = 'Interrupted by server restart';
+      }
+    }
+    return tasks;
+  } catch { return {}; }
+}
+
+// ── Group message persistence ─────────────────────────────────────────────────
+
+export function appendGroupMessage(msg) {
+  try {
+    fs.appendFileSync(GROUP_MESSAGES_FILE, JSON.stringify(msg) + '\n');
+  } catch {}
+}
+
+export function loadGroupMessages() {
+  try {
+    if (!fs.existsSync(GROUP_MESSAGES_FILE)) return [];
+    const lines = fs.readFileSync(GROUP_MESSAGES_FILE, 'utf8')
+      .split('\n')
+      .filter(l => l.trim());
+    // Keep last N messages
+    const tail = lines.slice(-GROUP_MESSAGES_LIMIT);
+    return tail.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return []; }
+}
+
+// Trim the file to last N lines periodically
+export function trimGroupMessagesFile() {
+  try {
+    if (!fs.existsSync(GROUP_MESSAGES_FILE)) return;
+    const lines = fs.readFileSync(GROUP_MESSAGES_FILE, 'utf8').split('\n').filter(l => l.trim());
+    if (lines.length > GROUP_MESSAGES_LIMIT * 2) {
+      const trimmed = lines.slice(-GROUP_MESSAGES_LIMIT);
+      fs.writeFileSync(GROUP_MESSAGES_FILE, trimmed.join('\n') + '\n');
+    }
+  } catch {}
+}
+
+// ── Queued task persistence ───────────────────────────────────────────────────
+
+export function saveQueuedTasks(queues) {
+  try {
+    // Only save serializable task info (no functions)
+    const serializable = {};
+    for (const [agent, tasks] of Object.entries(queues)) {
+      serializable[agent] = tasks.map(t => (typeof t === 'object' ? t : null)).filter(Boolean);
+    }
+    fs.writeFileSync(QUEUED_TASKS_FILE, JSON.stringify(serializable, null, 2));
+  } catch {}
+}
+
+export function loadQueuedTasks() {
+  try {
+    if (!fs.existsSync(QUEUED_TASKS_FILE)) return {};
+    return JSON.parse(fs.readFileSync(QUEUED_TASKS_FILE, 'utf8'));
+  } catch { return {}; }
+}
+
+export function clearQueuedTasks() {
+  try { fs.writeFileSync(QUEUED_TASKS_FILE, '{}'); } catch {}
+}
 
 export function loadMemory(agentName) {
   try {
