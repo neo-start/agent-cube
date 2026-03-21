@@ -5,6 +5,7 @@ import { loadGroupRegistry, getGroup, createGroup, updateGroup, deleteGroup } fr
 import { scheduleAgent, createThread, runAgentInThread, resumeThread } from '../agents.js';
 import { orchestrate, askClarificationIfNeeded, consumePendingClarification } from '../orchestration.js';
 import { getAllAgentNames } from '../registry.js';
+import { buildAttachmentPrompt } from '../pdf-utils.js';
 
 const router = Router();
 
@@ -129,7 +130,7 @@ router.get('/groups/:groupId/stream', (req: Request, res: Response) => {
 });
 
 // ── POST /api/groups/:groupId/send ────────────────────────────────────────────
-export function handleSend(req: Request, res: Response): void {
+export async function handleSend(req: Request, res: Response): Promise<void> {
   const groupId = (req.params['groupId'] as string) || 'default';
   const { text, target, attachments, threadId, projectId, maxTurns } = req.body as {
     text: string;
@@ -146,9 +147,8 @@ export function handleSend(req: Request, res: Response): void {
   const mentionRegex = new RegExp(`@(${agentNamesPattern})\\b`, 'gi');
 
   let prompt = text.replace(mentionRegex, '').trim();
-  if (attachments && attachments.length > 0) {
-    prompt += '\n\nATTACHMENTS:\n' + attachments.map(a => `- ${a.name} [${a.type}]: ${a.url}`).join('\n');
-  }
+  const attachmentSuffix = await buildAttachmentPrompt(attachments || []);
+  if (attachmentSuffix) prompt += attachmentSuffix;
 
   // Resume a paused thread
   if (threadId && state.threads[threadId]) {
@@ -236,7 +236,9 @@ router.post('/groups/:groupId/send', (req: Request, res: Response) => {
   const groupId = req.params['groupId'] as string;
   const group = getGroup(groupId);
   if (!group) return res.status(404).json({ ok: false, error: 'Group not found' });
-  handleSend(req, res);
+  handleSend(req, res).catch((err: Error) => {
+    if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
+  });
 });
 
 export default router;
