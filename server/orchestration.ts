@@ -158,24 +158,30 @@ export async function orchestrate(orchestrationId: string, description: string, 
   broadcast();
 
   // Resolve agent roles dynamically from registry.
-  // Convention: claude-based agents are "coders", deepseek/other are "analysts".
-  // Falls back to first/last agent if no clear split.
+  // Convention: first claude agent = coder, non-claude = analyst, second claude = architect.
   const allAgents = loadAgentRegistry();
-  const coderAgent = allAgents.find(a => a.provider === 'claude') || allAgents[0];
+  const claudeAgents = allAgents.filter(a => a.provider === 'claude');
+  const coderAgent = claudeAgents[0] || allAgents[0];
   const analystAgent = allAgents.find(a => a.provider !== 'claude') || allAgents[allAgents.length - 1];
+  const architectAgent = claudeAgents[1] || null; // third agent (Arc), if registered
   const coderName = coderAgent.name;
   const analystName = analystAgent.name;
+  const architectName = architectAgent?.name || null;
   const singleAgent = coderName === analystName; // only one agent registered
 
   const lowerDesc = description.toLowerCase();
   const codeKeywords = /\b(code|implement|build|fix|bug|write|create|refactor|deploy|script|function|api|endpoint|component|css|html|server|database|sql)\b/;
-  const thinkKeywords = /\b(analyze|explain|plan|review|compare|evaluate|research|strategy|design|think|why|how|what|summarize|assess)\b/;
+  const thinkKeywords = /\b(analyze|explain|plan|review|compare|evaluate|research|strategy|think|why|summarize|assess)\b/;
+  const archKeywords = /\b(architect|architecture|design|system design|structure|pattern|trade.?off|scalab|review code|code review)\b/;
   const hasCode = codeKeywords.test(lowerDesc);
   const hasThink = thinkKeywords.test(lowerDesc);
+  const hasArch = !!architectName && archKeywords.test(lowerDesc);
 
   let routing: Routing;
   if (singleAgent) {
     routing = { route: coderName, reason: 'Only one agent registered' };
+  } else if (hasArch && !hasCode) {
+    routing = { route: architectName!, reason: 'Architecture/design task detected' };
   } else if (hasCode && !hasThink) {
     routing = { route: coderName, reason: 'Code-related task detected' };
   } else if (hasThink && !hasCode) {
@@ -221,10 +227,11 @@ export async function orchestrate(orchestrationId: string, description: string, 
     return taskId;
   };
 
-  if (routing.route === coderName) {
-    const taskId = makeTask(coderName, description);
+  if (routing.route === coderName || routing.route === architectName) {
+    const agentName = routing.route as string;
+    const taskId = makeTask(agentName, description);
     state.orchestrations[orchestrationId]['clawTaskId'] = taskId;
-    scheduleAgent(coderName, taskId, description);
+    scheduleAgent(agentName, taskId, description);
     watchSingleTask(orchestrationId, taskId, 'clawResult');
   } else if (routing.route === analystName) {
     const taskId = makeTask(analystName, description);
