@@ -129,12 +129,12 @@ const GROUP_MESSAGING_PROTOCOL = `
 ## Group Chat Messaging Protocol
 You are in a group chat. To send a message to another agent or to the user, use this format on its own line:
 [MSG:Forge] message content here
-[MSG:Sage] message content here
+[MSG:Arc] message content here
 [MSG:User] message content here
 
 Rules:
 - Use [MSG:X] when you need to actively send something to a specific recipient
-- [MSG:Forge] or [MSG:Sage] will deliver the message AND trigger that agent to respond
+- [MSG:Forge] or [MSG:Arc] will deliver the message AND trigger that agent to respond
 - [MSG:User] will post the message visibly to the user in group chat
 - You can include multiple [MSG:X] blocks in one response
 - Do NOT use [DELEGATE:X] and [MSG:X] for the same subtask — pick one
@@ -142,8 +142,8 @@ Rules:
 
 // Fallback personas if soul files don't exist
 const DEFAULT_PERSONAS: Record<string, string> = {
-  Forge: `You are Forge, a senior software engineer and coding specialist. You write clean, working code. You think step by step. You always verify your reasoning before coding. If you receive a task that is purely analytical or strategic (no coding needed), start your response with exactly [DELEGATE:Sage] on the first line, then explain what analysis you need from Sage. Otherwise, just solve the task directly.`,
-  Sage: `You are Sage, a strategic analyst and thinking partner. You excel at breaking down problems, reasoning through tradeoffs, writing plans, and explaining complex ideas clearly. If you receive a task that requires actual code implementation or execution, start your response with exactly [DELEGATE:Forge] on the first line, then specify the exact coding task for Forge. Otherwise, just answer directly.`
+  Forge: `You are Forge, a senior software engineer and coding specialist. You write clean, working code. You think step by step. You always verify your reasoning before coding. If you receive a task that is purely architectural or strategic (no coding needed), start your response with exactly [DELEGATE:Arc] on the first line, then explain what design guidance you need from Arc. Otherwise, just solve the task directly.`,
+  Arc: `You are Arc, a software architect and systems design specialist. You think in structures, patterns, and long-term consequences. Your strengths: system design, architecture reviews, identifying trade-offs, defining interfaces and contracts, evaluating scalability and maintainability. You read code critically — not to fix bugs, but to assess structure and design decisions. If a task requires actual code implementation, start your response with exactly [DELEGATE:Forge] on the first line, then describe what needs to be built. Otherwise, provide architectural guidance directly.`,
 };
 
 // Load persona from soul file, fallback to default
@@ -365,9 +365,9 @@ const NEXT_PROTOCOL = `
 ## Conversation Protocol
 You are in a multi-agent group discussion. At the very end of your response, on its own line, declare who should speak next:
 
-[NEXT:Sage]        — pass turn to Sage
 [NEXT:Forge]        — pass turn to Forge
-[NEXT:Forge,Sage]   — both agents respond (parallel)
+[NEXT:Arc]         — pass turn to Arc
+[NEXT:Forge,Arc]   — both agents respond (parallel)
 [NEXT:User]        — pause and wait for user input
 [DONE]             — the discussion is complete
 
@@ -639,8 +639,11 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
       pushGroupMsg('thread-pause', agentName, '', { threadId });
     } else {
       // Pass turn to each named agent (stagger parallel calls slightly)
+      // Use case-insensitive registry lookup instead of manual casing to handle
+      // multi-word / camelCase agent names (e.g. DeepSeek, ForgeArc)
       directive.targets!.forEach((nextAgent, i) => {
-        const name = nextAgent.charAt(0).toUpperCase() + nextAgent.slice(1).toLowerCase();
+        const allNames = getAllAgentNames();
+        const name = allNames.find(n => n.toLowerCase() === nextAgent.toLowerCase()) ?? nextAgent;
         setTimeout(() => runAgentInThread(name, threadId), i * 200);
       });
     }
@@ -654,6 +657,8 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
     if (!state.groupMessages[threadGroupId]) state.groupMessages[threadGroupId] = [];
     state.groupMessages[threadGroupId].push(streamMsg as import('./types.js').GroupMessage);
     appendGroupMessageForGroup(threadGroupId, streamMsg as import('./types.js').GroupMessage);
+    // Persist thread state even on error so messages aren't lost on server restart
+    saveThread(thread);
     broadcast();
   }
 }

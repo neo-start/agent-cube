@@ -45,6 +45,7 @@ export const tools: Record<string, Tool> = {
       // Support "path:start-end" for line ranges
       const rangeMatch = raw.match(/^(.+):(\d+)-(\d+)$/);
       const filePath = resolvePath(rangeMatch ? rangeMatch[1] : raw, workspace);
+      if (!filePath.startsWith(workspace)) return `Error: Cannot read files outside workspace`;
       if (!fs.existsSync(filePath)) return `Error: File not found: ${filePath}`;
       try {
         const content = fs.readFileSync(filePath, 'utf8');
@@ -73,6 +74,7 @@ export const tools: Record<string, Tool> = {
       const firstNewline = args.indexOf('\n');
       if (firstNewline === -1) return 'Error: writeFile requires path on first line, content on subsequent lines';
       const filePath = resolvePath(args.slice(0, firstNewline).trim(), workspace);
+      if (!filePath.startsWith(workspace)) return `Error: Cannot write files outside workspace`;
       const content = args.slice(firstNewline + 1);
       try {
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -90,6 +92,7 @@ export const tools: Record<string, Tool> = {
       const firstNewline = args.indexOf('\n');
       if (firstNewline === -1) return 'Error: appendFile requires path on first line, content after';
       const filePath = resolvePath(args.slice(0, firstNewline).trim(), workspace);
+      if (!filePath.startsWith(workspace)) return `Error: Cannot append to files outside workspace`;
       const content = args.slice(firstNewline + 1);
       try {
         fs.mkdirSync(path.dirname(filePath), { recursive: true });

@@ -4,8 +4,8 @@ import { getGroupBus, removeGroupBus } from '../group-bus.js';
 import { loadGroupRegistry, getGroup, createGroup, updateGroup, deleteGroup } from '../group-registry.js';
 import { scheduleAgent, createThread, runAgentInThread, resumeThread } from '../agents.js';
 import { orchestrate, askClarificationIfNeeded, consumePendingClarification } from '../orchestration.js';
-import { getAllAgentNames } from '../registry.js';
-import { buildAttachmentPrompt } from '../pdf-utils.js';
+import { getAllAgentNames, loadAgentRegistry } from '../registry.js';
+import { buildAttachmentPrompt, hasPdfAttachment } from '../pdf-utils.js';
 
 const router = Router();
 
@@ -113,10 +113,12 @@ export function handleStream(req: Request, res: Response): void {
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
+  (req.socket as import('net').Socket).setNoDelay(true);
 
   const bus = getGroupBus(groupId);
   const unsubscribe = bus.on('*', (event) => {
     res.write(`data: ${JSON.stringify(event)}\n\n`);
+    (res as any).flush?.();
   });
 
   req.on('close', unsubscribe);
@@ -130,7 +132,7 @@ router.get('/groups/:groupId/stream', (req: Request, res: Response) => {
 });
 
 // ── POST /api/groups/:groupId/send ────────────────────────────────────────────
-export async function handleSend(req: Request, res: Response): Promise<void> {
+export function handleSend(req: Request, res: Response): void {
   const groupId = (req.params['groupId'] as string) || 'default';
   const { text, target, attachments, threadId, projectId, maxTurns } = req.body as {
     text: string;
@@ -147,7 +149,7 @@ export async function handleSend(req: Request, res: Response): Promise<void> {
   const mentionRegex = new RegExp(`@(${agentNamesPattern})\\b`, 'gi');
 
   let prompt = text.replace(mentionRegex, '').trim();
-  const attachmentSuffix = await buildAttachmentPrompt(attachments || []);
+  const attachmentSuffix = buildAttachmentPrompt(attachments || []);
   if (attachmentSuffix) prompt += attachmentSuffix;
 
   // Resume a paused thread
@@ -201,19 +203,57 @@ export async function handleSend(req: Request, res: Response): Promise<void> {
     res.json({ ok: true, taskId }); return;
   }
 
-  // ── No @ → check for pending clarification first ─────────────────────────
+  // ── PDF attachment with no @mention → force route to first Claude agent (Forge) ─
+  if (hasPdfAttachment(attachments || [])) {
+    const allAgents = loadAgentRegistry();
+    const forgeAgent = allAgents.find(a => a.provider === 'claude');
+    if (forgeAgent && agentNames.includes(forgeAgent.name)) {
+      const taskId = `task-${++state.taskCounter}-${Date.now()}`;
+      state.tasks[taskId] = {
+        id: taskId, agent: forgeAgent.name, description: prompt, by: 'User',
+        status: 'working', latestLog: null, result: null,
+        delegatedBy: null, parentTaskId: null, source: 'group',
+        createdAt: new Date().toISOString(), attachments: attachments || [],
+        groupId,
+      };
+      pushGroupMsg('status', forgeAgent.name, 'Reading PDF...', { status: 'working', taskId, groupId });
+      scheduleAgent(forgeAgent.name, taskId, prompt);
+      res.json({ ok: true, taskId }); return;
+    }
+  }
+
+  // ── No @ → find last replying agent and let it decide who responds ────────
+  const groupMsgs = state.groupMessages[groupId] || [];
+  const lastAgentMsg = [...groupMsgs].reverse().find(
+    m => m.type === 'reply' && m.from !== 'User' && m.from !== 'System' && m.from !== 'Orchestrator' && agentNames.includes(m.from)
+  );
+
+  if (lastAgentMsg) {
+    const taskId = `task-${++state.taskCounter}-${Date.now()}`;
+    state.tasks[taskId] = {
+      id: taskId, agent: lastAgentMsg.from, description: prompt, by: 'User',
+      status: 'working', latestLog: null, result: null,
+      delegatedBy: null, parentTaskId: null, source: 'group',
+      createdAt: new Date().toISOString(), attachments: attachments || [],
+      groupId,
+    };
+    scheduleAgent(lastAgentMsg.from, taskId, prompt);
+    res.json({ ok: true, taskId }); return;
+  }
+
+  // ── No prior agent reply → fall back to Orchestrator ─────────────────────
   const enrichedPrompt = consumePendingClarification(groupId, prompt);
   const finalPrompt = enrichedPrompt ?? prompt;
+
+  // Only increment taskCounter after confirming we'll actually create a task
+  // (clarification branch returns early without creating one)
+  if (!enrichedPrompt && askClarificationIfNeeded(`orch-${state.taskCounter + 1}-${Date.now()}`, finalPrompt, groupId)) {
+    res.json({ ok: true, clarificationRequested: true }); return;
+  }
 
   const taskId = `task-${++state.taskCounter}-${Date.now()}`;
   const orchestrationId = `orch-${state.taskCounter}-${Date.now()}`;
 
-  // If input is ambiguous and there's no clarification yet, ask instead of routing
-  if (!enrichedPrompt && askClarificationIfNeeded(orchestrationId, finalPrompt, groupId)) {
-    res.json({ ok: true, clarificationRequested: true }); return;
-  }
-
-  // ── Route to Orchestrator ─────────────────────────────────────────────────
   state.tasks[taskId] = {
     id: taskId, agent: 'Orchestrator', description: finalPrompt, by: 'User',
     status: 'working', latestLog: null, result: null,
@@ -236,9 +276,7 @@ router.post('/groups/:groupId/send', (req: Request, res: Response) => {
   const groupId = req.params['groupId'] as string;
   const group = getGroup(groupId);
   if (!group) return res.status(404).json({ ok: false, error: 'Group not found' });
-  handleSend(req, res).catch((err: Error) => {
-    if (!res.headersSent) res.status(500).json({ ok: false, error: err.message });
-  });
+  handleSend(req, res);
 });
 
 export default router;
