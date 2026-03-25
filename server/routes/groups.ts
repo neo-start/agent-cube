@@ -121,7 +121,15 @@ export function handleStream(req: Request, res: Response): void {
     (res as any).flush?.();
   });
 
-  req.on('close', unsubscribe);
+  // SSE keepalive — prevents proxies/load balancers from dropping idle connections
+  const keepalive = setInterval(() => {
+    try { res.write(`: keepalive\n\n`); } catch { clearInterval(keepalive); }
+  }, 30_000);
+
+  req.on('close', () => {
+    clearInterval(keepalive);
+    unsubscribe();
+  });
 }
 
 router.get('/groups/:groupId/stream', (req: Request, res: Response) => {

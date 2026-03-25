@@ -12,15 +12,21 @@ function resolveUploadPath(url: string): string {
 }
 
 /**
+ * Check whether any attachment is a PDF.
+ */
+export function hasPdfAttachment(attachments: Attachment[]): boolean {
+  return attachments.some(a => a.name.toLowerCase().endsWith('.pdf'));
+}
+
+/**
  * Middleware: given attachments array, build an enriched prompt suffix.
  *
- * PDFs: include absolute disk path so the agent (Claude Code / Forge) can
- * read them directly using its native Read tool, which handles both text
- * and scanned image PDFs.
+ * PDFs: pass the absolute file path so the routing agent (Forge / Claude Code)
+ * can use its native Read tool to read both text and scanned image PDFs.
  *
  * Other files: include the URL reference as before.
  */
-export async function buildAttachmentPrompt(attachments: Attachment[]): Promise<string> {
+export function buildAttachmentPrompt(attachments: Attachment[]): string {
   if (!attachments || attachments.length === 0) return '';
 
   const parts: string[] = [];
@@ -36,7 +42,7 @@ export async function buildAttachmentPrompt(attachments: Attachment[]): Promise<
           `Read this PDF file to understand its content before proceeding with the task.`
         );
       } else {
-        parts.push(`- ${att.name} [PDF, file not found on disk]`);
+        parts.push(`- ${att.name} [PDF, file not found]`);
       }
     } else {
       parts.push(`- ${att.name} [${att.type}]: ${att.url}`);

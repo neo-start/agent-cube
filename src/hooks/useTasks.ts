@@ -3,7 +3,7 @@ import type { AgentsResponse, AgentData } from '../types';
 
 const DEFAULT_AGENTS: Record<string, AgentData> = {
   Forge: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, by: null, raw: null, delegatedBy: null, parentTaskId: null, source: null },
-  Sage: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, by: null, raw: null, delegatedBy: null, parentTaskId: null, source: null },
+  Arc: { status: 'idle', taskId: null, description: null, latestLog: null, title: null, by: null, raw: null, delegatedBy: null, parentTaskId: null, source: null },
 };
 
 export function useTasks(pollInterval = 30000) {

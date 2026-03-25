@@ -1,18 +1,23 @@
-import { state, broadcast, pushGroupMsg } from './state.js';
+import { state, broadcast, pushGroupMsg, taskEvents } from './state.js';
 import { scheduleAgent, PERSONAS } from './agents.js';
-import { DEEPSEEK_API_KEY } from './config.js';
+import { streamChat } from './claude-proxy.js';
 import { loadAgentRegistry } from './registry.js';
 
 const CLARIFICATION_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /** Returns true when the message is too vague to route meaningfully. */
 function isAmbiguousInput(text: string): boolean {
-  const words = text.trim().split(/\s+/).filter(w => w.length > 1);
-  if (words.length >= 4) return false; // enough context
-  const lower = text.toLowerCase().trim();
+  const trimmed = text.trim();
+  // For CJK text, count characters directly (no space-delimited words)
+  const hasCJK = /[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f]/.test(trimmed);
+  const charCount = hasCJK ? trimmed.replace(/\s+/g, '').length : 0;
+  const words = trimmed.split(/\s+/).filter(w => w.length > 1);
+  // Enough context if 4+ words (Latin) or 6+ CJK characters
+  if (words.length >= 4 || charCount >= 6) return false;
+  const lower = trimmed.toLowerCase();
   const actionable = /\b(code|implement|build|fix|bug|write|create|refactor|deploy|script|function|api|endpoint|component|server|database|sql|error|crash|test|analyze|explain|plan|review|compare|evaluate|research|strategy|design|summarize|document|describe|translate|generate|optimize)\b/;
-  // short AND no actionable keyword
-  return !actionable.test(lower);
+  const actionableCJK = /(写|实现|创建|修复|部署|分析|解释|计划|审查|比较|评估|研究|设计|总结|文档|翻译|生成|优化|重构|测试|代码|函数|接口|组件|服务|数据库|错误)/;
+  return !actionable.test(lower) && !actionableCJK.test(trimmed);
 }
 
 /**
@@ -55,37 +60,65 @@ export function consumePendingClarification(groupId: string, reply: string): str
 }
 
 export function watchSingleTask(orchestrationId: string, taskId: string, resultKey: 'clawResult' | 'deepResult'): void {
-  const iv = setInterval(() => {
-    const task = state.tasks[taskId];
-    if (!task) return;
-    if (task.status === 'done' || task.status === 'blocked') {
-      clearInterval(iv);
-      const orch = state.orchestrations[orchestrationId];
-      orch[resultKey] = task.result;
-      orch.merged = task.result;
-      orch.status = task.status === 'done' ? 'done' : 'blocked';
-      state.agents['Orchestrator'].status = orch.status;
-      state.agents['Orchestrator'].latestLog = (task.result || 'Done').slice(-500);
+  const TIMEOUT_MS = 15 * 60 * 1000;
+  const timer = setTimeout(() => {
+    taskEvents.removeListener('task-done', handler);
+    const orch = state.orchestrations[orchestrationId];
+    if (orch && orch.status !== 'done') {
+      orch.status = 'blocked';
+      orch.merged = 'Orchestration timed out';
+      state.agents['Orchestrator'].status = 'blocked';
+      state.agents['Orchestrator'].latestLog = 'Timed out waiting for agent';
       broadcast();
     }
-  }, 1500);
+  }, TIMEOUT_MS);
+
+  const handler = (completedTaskId: string) => {
+    if (completedTaskId !== taskId) return;
+    taskEvents.removeListener('task-done', handler);
+    clearTimeout(timer);
+    const task = state.tasks[taskId];
+    const orch = state.orchestrations[orchestrationId];
+    if (!task || !orch) return;
+    orch[resultKey] = task.result;
+    orch.merged = task.result;
+    orch.status = task.status === 'done' ? 'done' : 'blocked';
+    state.agents['Orchestrator'].status = orch.status;
+    state.agents['Orchestrator'].latestLog = (task.result || 'Done').slice(-500);
+    broadcast();
+  };
+  taskEvents.on('task-done', handler);
 }
 
 async function watchBothTasks(orchestrationId: string, clawTaskId: string, deepTaskId: string, description: string, coderName: string, analystName: string): Promise<void> {
-  const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
-  const startedAt = Date.now();
-  const iv = setInterval(async () => {
-    const orch = state.orchestrations[orchestrationId];
+  const TIMEOUT_MS = 15 * 60 * 1000;
+  let settled = false;
 
-    if (Date.now() - startedAt > TIMEOUT_MS) {
-      clearInterval(iv);
+  const cleanup = () => {
+    settled = true;
+    clearTimeout(timer);
+    taskEvents.removeListener('task-done', handler);
+  };
+
+  const timer = setTimeout(() => {
+    if (settled) return;
+    cleanup();
+    const orch = state.orchestrations[orchestrationId];
+    if (orch && orch.status !== 'done') {
       orch.status = 'blocked';
       orch.merged = 'Orchestration timed out';
       state.agents['Orchestrator'].status = 'blocked';
       state.agents['Orchestrator'].latestLog = 'Timed out waiting for both agents';
       broadcast();
-      return;
     }
+  }, TIMEOUT_MS);
+
+  const handler = async (completedTaskId: string) => {
+    if (settled) return;
+    if (completedTaskId !== clawTaskId && completedTaskId !== deepTaskId) return;
+
+    const orch = state.orchestrations[orchestrationId];
+    if (!orch) { cleanup(); return; }
 
     const clawTask = state.tasks[clawTaskId];
     const deepTask = state.tasks[deepTaskId];
@@ -98,35 +131,23 @@ async function watchBothTasks(orchestrationId: string, clawTaskId: string, deepT
     if (deepDone) orch.deepResult = deepTask.result;
 
     if (clawDone && deepDone) {
-      clearInterval(iv);
+      cleanup();
       orch.status = 'merging';
       state.agents['Orchestrator'].latestLog = 'Merging results...';
       broadcast();
 
       try {
-        const allAgents = loadAgentRegistry();
-        const analystConfig = allAgents.find(a => a.name === analystName) || allAgents[allAgents.length - 1];
-        const mergeApiKey = analystConfig?.apiKey || DEEPSEEK_API_KEY;
-        const mergeModel = analystConfig?.model || 'deepseek-chat';
-        const mergePersona = PERSONAS[analystName] || PERSONAS['Sage'] || 'You are a helpful assistant.';
-        const mergeRes = await fetch('https://api.deepseek.com/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + mergeApiKey,
-          },
-          body: JSON.stringify({
-            model: mergeModel,
-            messages: [
-              { role: 'system', content: mergePersona },
-              { role: 'user', content: `Merge these two responses into one cohesive answer:\nANALYSIS (from ${analystName}): ${orch.deepResult || '(none)'}\nIMPLEMENTATION (from ${coderName}): ${orch.clawResult || '(none)'}\nOriginal request: ${description}\nProvide a clean integrated response.` },
-            ],
-            stream: false,
-          }),
+        const mergePersona = PERSONAS[analystName] || 'You are a helpful assistant.';
+        const mergePrompt = `Merge these two responses into one cohesive answer:\nANALYSIS (from ${analystName}): ${orch.deepResult || '(none)'}\nIMPLEMENTATION (from ${coderName}): ${orch.clawResult || '(none)'}\nOriginal request: ${description}\nProvide a clean integrated response.`;
+        let merged = '';
+        await streamChat({
+          agentName: analystName,
+          sessionKey: `merge-${orchestrationId}`,
+          system: mergePersona,
+          userMessage: mergePrompt,
+          onDelta: (chunk: string) => { merged += chunk; },
         });
-        const mergeData = await mergeRes.json() as { choices?: Array<{ message?: { content?: string } }> };
-        const merged = mergeData.choices?.[0]?.message?.content || 'Merge failed';
-        orch.merged = merged;
+        orch.merged = merged || 'Merge failed';
         orch.status = 'done';
         state.agents['Orchestrator'].status = 'done';
         state.agents['Orchestrator'].latestLog = merged.slice(-500);
@@ -138,7 +159,8 @@ async function watchBothTasks(orchestrationId: string, clawTaskId: string, deepT
       }
       broadcast();
     }
-  }, 1500);
+  };
+  taskEvents.on('task-done', handler);
 }
 
 interface Routing {
@@ -171,11 +193,14 @@ export async function orchestrate(orchestrationId: string, description: string, 
 
   const lowerDesc = description.toLowerCase();
   const codeKeywords = /\b(code|implement|build|fix|bug|write|create|refactor|deploy|script|function|api|endpoint|component|css|html|server|database|sql)\b/;
+  const codeKeywordsCJK = /(代码|编码|实现|构建|修复|修bug|写代码|创建|重构|部署|脚本|函数|接口|组件|服务器|数据库|前端|后端|页面|样式|功能)/;
   const thinkKeywords = /\b(analyze|explain|plan|review|compare|evaluate|research|strategy|think|why|summarize|assess)\b/;
+  const thinkKeywordsCJK = /(分析|解释|计划|审查|对比|比较|评估|研究|策略|思考|为什么|总结|评价|调研)/;
   const archKeywords = /\b(architect|architecture|design|system design|structure|pattern|trade.?off|scalab|review code|code review)\b/;
-  const hasCode = codeKeywords.test(lowerDesc);
-  const hasThink = thinkKeywords.test(lowerDesc);
-  const hasArch = !!architectName && archKeywords.test(lowerDesc);
+  const archKeywordsCJK = /(架构|设计|系统设计|结构|模式|权衡|可扩展|代码审查|技术方案|选型)/;
+  const hasCode = codeKeywords.test(lowerDesc) || codeKeywordsCJK.test(description);
+  const hasThink = thinkKeywords.test(lowerDesc) || thinkKeywordsCJK.test(description);
+  const hasArch = !!architectName && (archKeywords.test(lowerDesc) || archKeywordsCJK.test(description));
 
   let routing: Routing;
   if (singleAgent) {
@@ -188,35 +213,18 @@ export async function orchestrate(orchestrationId: string, description: string, 
     routing = { route: analystName, reason: 'Analysis/thinking task detected' };
   } else {
     routing = { route: 'both', reason: 'Default: engage both agents' };
-    try {
-      const analystConfig = allAgents.find(a => a.name === analystName);
-      const routeApiKey = analystConfig?.apiKey || DEEPSEEK_API_KEY;
-      const routeModel = analystConfig?.model || 'deepseek-chat';
-      const routeRes = await fetch('https://api.deepseek.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + routeApiKey,
-        },
-        body: JSON.stringify({
-          model: routeModel,
-          messages: [
-            { role: 'system', content: 'You are a task router. Analyze the task and respond with ONLY valid JSON, nothing else. No markdown, no explanation.' },
-            { role: 'user', content: `Route this task: "${description}"\nJSON format: {"route": "${coderName}"|"${analystName}"|"both", "reason": "one line", "coderTask": "subtask for ${coderName}", "analystTask": "subtask for ${analystName}"}\n${coderName} = coding/implementation. ${analystName} = analysis/thinking. both = needs both.` },
-          ],
-          stream: false,
-        }),
-      });
-      const routeData = await routeRes.json() as { choices?: Array<{ message?: { content?: string } }> };
-      const content = routeData.choices?.[0]?.message?.content || '{}';
-      const jsonStr = content.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(jsonStr) as { route?: string; reason?: string; coderTask?: string; analystTask?: string };
-      if (parsed.route) routing = { ...parsed, route: parsed.route, reason: parsed.reason || '', clawTask: parsed.coderTask, deepTask: parsed.analystTask };
-    } catch {}
   }
 
-  state.orchestrations[orchestrationId]['route'] = routing.route;
-  state.orchestrations[orchestrationId]['reason'] = routing.reason;
+  if (!state.orchestrations[orchestrationId]) {
+    state.orchestrations[orchestrationId] = {
+      id: orchestrationId, description, by: 'Orchestrator', status: 'working',
+      route: null, reason: null, clawTaskId: null, deepTaskId: null,
+      clawResult: null, deepResult: null, merged: null,
+      createdAt: new Date().toISOString(),
+    };
+  }
+  state.orchestrations[orchestrationId].route = routing.route;
+  state.orchestrations[orchestrationId].reason = routing.reason;
   orchAgent.latestLog = `Route: ${routing.route} — ${routing.reason || ''}`;
   broadcast();
 
@@ -230,12 +238,12 @@ export async function orchestrate(orchestrationId: string, description: string, 
   if (routing.route === coderName || routing.route === architectName) {
     const agentName = routing.route as string;
     const taskId = makeTask(agentName, description);
-    state.orchestrations[orchestrationId]['clawTaskId'] = taskId;
+    state.orchestrations[orchestrationId].clawTaskId = taskId;
     scheduleAgent(agentName, taskId, description);
     watchSingleTask(orchestrationId, taskId, 'clawResult');
   } else if (routing.route === analystName) {
     const taskId = makeTask(analystName, description);
-    state.orchestrations[orchestrationId]['deepTaskId'] = taskId;
+    state.orchestrations[orchestrationId].deepTaskId = taskId;
     scheduleAgent(analystName, taskId, description);
     watchSingleTask(orchestrationId, taskId, 'deepResult');
   } else {
@@ -245,8 +253,8 @@ export async function orchestrate(orchestrationId: string, description: string, 
     const clawTaskId = makeTask(coderName, clawDesc);
     const deepTaskId = makeTask(analystName, deepDesc);
 
-    state.orchestrations[orchestrationId]['clawTaskId'] = clawTaskId;
-    state.orchestrations[orchestrationId]['deepTaskId'] = deepTaskId;
+    state.orchestrations[orchestrationId].clawTaskId = clawTaskId;
+    state.orchestrations[orchestrationId].deepTaskId = deepTaskId;
 
     scheduleAgent(coderName, clawTaskId, clawDesc);
     scheduleAgent(analystName, deepTaskId, deepDesc);

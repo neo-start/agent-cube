@@ -1,6 +1,6 @@
-import { state, broadcast, pushGroupMsg, dequeueAgentTask, persistQueues, agentTaskQueues, saveTasksState } from './state.js';
+import { state, broadcast, pushGroupMsg, dequeueAgentTask, persistQueues, agentTaskQueues, saveTasksState, taskEvents } from './state.js';
 import { getGroupBus } from './group-bus.js';
-import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, appendLongTermMemory, appendInbox, readInbox, clearInbox, saveThread, appendGroupMessageForGroup } from './memory.js';
+import { loadMemory, appendMemory, logTask, loadScratchpad, loadSoul, appendLongTermMemory, saveThread, appendGroupMessageForGroup } from './memory.js';
 import { parseToolCalls, executeToolCalls, TOOL_PROTOCOL } from './tools.js';
 import { WORKSPACES_DIR } from './config.js';
 import { getAgentConfig, getAllAgentNames } from './registry.js';
@@ -161,6 +161,11 @@ export const PERSONAS = DEFAULT_PERSONAS;
  */
 export function scheduleAgent(agentName: string, taskId: string, description: string): void {
   const agentState = state.agents[agentName];
+  if (!agentState) {
+    console.error(`[scheduleAgent] Unknown agent: ${agentName}`);
+    if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
+    return;
+  }
   if (agentState.status === 'working') {
     const enqueued = agentTaskQueues[agentName].enqueue(
       () => runAgent(agentName, taskId, description),
@@ -248,6 +253,7 @@ async function runAgent(agentName: string, taskId: string, description: string):
     const isDelegated = checkDelegation(result, agentName, taskId, description);
     if (!isDelegated && isGroupTask) checkGroupMessages(result, agentName, taskId);
     agent.status = 'done';
+    agent._nudgedAt = null;
     if (!isDelegated) appendMemory(agentName, 'assistant', result.slice(0, 1000));
     if (state.tasks[taskId]) {
       state.tasks[taskId].status = 'done';
@@ -261,8 +267,10 @@ async function runAgent(agentName: string, taskId: string, description: string):
     }
     logTask(taskId, { ...state.tasks[taskId], completedAt: new Date().toISOString() });
     broadcast();
+    taskEvents.emit('task-done', taskId);
   } catch (err) {
     agent.status = 'blocked';
+    agent._nudgedAt = null;
     agent.latestLog = `Error: ${(err as Error).message}`;
     if (streamMsg) {
       streamMsg.type = 'reply';
@@ -272,15 +280,20 @@ async function runAgent(agentName: string, taskId: string, description: string):
     }
     if (state.tasks[taskId]) state.tasks[taskId].status = 'blocked';
     broadcast();
+    taskEvents.emit('task-done', taskId);
   } finally {
     saveTasksState(state.tasks);
     dequeueAgentTask(agentName);
   }
 }
 
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export function checkDelegation(response: string, fromAgent: string, taskId: string, originalDesc: string): boolean {
   const agentNames = getAllAgentNames();
-  const namePattern = agentNames.join('|');
+  const namePattern = agentNames.map(escapeRegex).join('|');
   const match = response.match(new RegExp(`^\\[DELEGATE:(${namePattern})\\]\\n?([\\s\\S]*)`));
   if (!match) return false;
   const toAgent = match[1];
@@ -319,7 +332,7 @@ export function checkDelegation(response: string, fromAgent: string, taskId: str
 // Returns true if any MSG blocks were found and processed.
 export function checkGroupMessages(response: string, fromAgent: string, taskId: string): boolean {
   const agentNames = getAllAgentNames();
-  const namePattern = agentNames.join('|');
+  const namePattern = agentNames.map(escapeRegex).join('|');
   const pattern = new RegExp(`\\[MSG:(${namePattern}|User)\\]([\\s\\S]*?)(?=\\[MSG:|$)`, 'g');
   let found = false;
   let match;
@@ -619,6 +632,7 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
     appendGroupMessageForGroup(threadGroupId, streamMsg as import('./types.js').GroupMessage);
 
     agent.status = 'idle';
+    agent._nudgedAt = null;
     broadcast();
 
     // Persist thread state after every turn (not just at end)
@@ -638,17 +652,21 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
       thread.status = 'paused';
       pushGroupMsg('thread-pause', agentName, '', { threadId });
     } else {
-      // Pass turn to each named agent (stagger parallel calls slightly)
-      // Use case-insensitive registry lookup instead of manual casing to handle
-      // multi-word / camelCase agent names (e.g. DeepSeek, ForgeArc)
-      directive.targets!.forEach((nextAgent, i) => {
-        const allNames = getAllAgentNames();
-        const name = allNames.find(n => n.toLowerCase() === nextAgent.toLowerCase()) ?? nextAgent;
-        setTimeout(() => runAgentInThread(name, threadId), i * 200);
-      });
+      // Pass turn to each named agent sequentially via promise chain
+      // (avoids setTimeout race conditions; each agent gets a clean turn)
+      const allNames = getAllAgentNames();
+      const resolvedTargets = directive.targets!.map(nextAgent =>
+        allNames.find(n => n.toLowerCase() === nextAgent.toLowerCase()) ?? nextAgent
+      );
+      // Chain promises: each agent starts after the previous finishes
+      resolvedTargets.reduce<Promise<void>>(
+        (chain, name) => chain.then(() => runAgentInThread(name, threadId)),
+        Promise.resolve()
+      ).catch(err => console.error(`[thread] Error in chained agent dispatch:`, err));
     }
   } catch (err) {
     agent.status = 'blocked';
+    agent._nudgedAt = null;
     agent.latestLog = `Error: ${(err as Error).message}`;
     streamMsg.type = 'reply';
     streamMsg.content = `Error: ${(err as Error).message}`;
@@ -669,6 +687,10 @@ export function resumeThread(threadId: string, userMessage: string, nextAgent?: 
   if (!thread) return false;
   thread.messages.push({ from: 'User', content: userMessage, timestamp: new Date().toISOString() });
   thread.status = 'active';
-  runAgentInThread(nextAgent || thread.participants[0], threadId);
+  runAgentInThread(nextAgent || thread.participants[0], threadId).catch((err) => {
+    console.error(`[resumeThread] Error resuming thread ${threadId}:`, err);
+    thread.status = 'paused';
+    broadcast();
+  });
   return true;
 }

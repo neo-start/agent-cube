@@ -68,7 +68,7 @@ router.post('/agents', (req: Request, res: Response) => {
   fs.writeFileSync(AGENTS_FILE, JSON.stringify(data, null, 2));
 
   clearRegistryCache();
-  state.agents[name] = { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null };
+  state.agents[name] = { status: 'idle', taskId: null, description: null, latestLog: null, title: null, _startedAt: null, _nudgedAt: null };
   agentTaskQueues[name] = new AgentTaskQueue(name, 20);
 
   res.status(201).json({ ok: true, agent });

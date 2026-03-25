@@ -10,23 +10,35 @@
 import { spawn } from 'child_process';
 import { homedir } from 'os';
 import { join } from 'path';
+import { mkdirSync } from 'fs';
 import type { ProviderResult, TokenUsage } from './types.js';
+
+// Internal signal markers — use non-printable prefix to avoid collision with real output
+const SIGNAL_PREFIX = '\x00__SIG__';
+const SIGNAL_TIMEOUT = `${SIGNAL_PREFIX}TIMEOUT:`;
+const SIGNAL_COMPACT = `${SIGNAL_PREFIX}COMPACT:`;
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || join(homedir(), '.local/bin/claude');
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || '';
 
-// 每个 agent 维护独立的 session id
+// 每个 agent 维护独立的 session id — stored under ~/.agent-cube/sessions/
+const SESSIONS_DIR = join(homedir(), '.agent-cube', 'sessions');
+mkdirSync(SESSIONS_DIR, { recursive: true });
 const sessions: Record<string, string | null> = {};
 
 function getSessionFile(agentName: string): string {
-  return join(homedir(), `.agent-cube-session-${agentName}`);
+  return join(SESSIONS_DIR, `${agentName}.session`);
 }
+
+// Session IDs from Claude CLI are UUIDs
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function loadSessionId(agentName: string): Promise<string | null> {
   try {
     const { readFile } = await import('fs/promises');
-    const content = await readFile(getSessionFile(agentName), 'utf8');
-    return content.trim() || null;
+    const content = (await readFile(getSessionFile(agentName), 'utf8')).trim();
+    if (!content || !SESSION_ID_RE.test(content)) return null;
+    return content;
   } catch {
     return null;
   }
@@ -184,7 +196,7 @@ export async function streamChat({ agentName = 'default', sessionKey, system, us
               // Context window full — compact first, then retry with summary
               console.warn(`[claude-proxy] Context overflow for ${sk}, compacting session...`);
               const overflowSessionId = sessions[sk];
-              finish(null, `__COMPACT__${overflowSessionId}`, null);
+              finish(null, `${SIGNAL_COMPACT}${overflowSessionId}`, null);
               return;
             }
             if (!accumulated) finish(new Error(`Claude error: ${err}`), null, null);
@@ -221,17 +233,29 @@ export async function streamChat({ agentName = 'default', sessionKey, system, us
       }
     });
 
-    // 5 分钟超时
+    // 30 分钟超时（长任务如大文件处理、多轮 tool loop）
     setTimeout(() => {
       if (!settled) {
         proc.kill();
-        finish(new Error('claude timeout (5min)'), null, null);
+        // If we have partial output and haven't retried yet, signal auto-resume
+        if (accumulated && !_retry) {
+          finish(null, `${SIGNAL_TIMEOUT}${accumulated}`, null);
+        } else {
+          finish(new Error('claude timeout (30min)'), null, null);
+        }
       }
-    }, 5 * 60 * 1000);
+    }, 30 * 60 * 1000);
   }).then(async out => {
+    // Handle timeout with partial output: auto-resume once
+    if (out && out.result && out.result.startsWith(SIGNAL_TIMEOUT)) {
+      const partial = out.result.slice(SIGNAL_TIMEOUT.length);
+      console.log(`[claude-proxy] Timeout with partial output for ${sk}, auto-resuming...`);
+      const resumePrompt = `You were working on a task but ran out of time. Here is the work you had completed so far:\n\n${partial}\n\nPlease continue from where you left off and complete the remaining work.`;
+      return streamChat({ agentName, sessionKey, system, userMessage: resumePrompt, onDelta, _retry: true });
+    }
     // Handle context overflow: compact first, then retry with summary
-    if (out && out.result && out.result.startsWith('__COMPACT__')) {
-      const overflowSessionId = out.result.slice('__COMPACT__'.length);
+    if (out && out.result && out.result.startsWith(SIGNAL_COMPACT)) {
+      const overflowSessionId = out.result.slice(SIGNAL_COMPACT.length);
       console.log(`[claude-proxy] Compacting session for ${sk}...`);
 
       const summary = await compactSession(sk, overflowSessionId);

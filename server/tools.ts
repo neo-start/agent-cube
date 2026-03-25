@@ -27,9 +27,14 @@ const EXEC_WHITELIST = [
 
 function resolvePath(filePath: string, workspace: string): string {
   if (!filePath) return workspace;
-  // 允许绝对路径（agent 有时需要访问系统文件）
-  if (path.isAbsolute(filePath)) return filePath;
-  return path.join(workspace, filePath);
+  const resolved = path.isAbsolute(filePath) ? filePath : path.join(workspace, filePath);
+  // Resolve symlinks to prevent traversal via symlinked directories
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    // File may not exist yet (writeFile) — resolve without symlink check
+    return path.resolve(resolved);
+  }
 }
 
 interface Tool {
@@ -108,6 +113,7 @@ export const tools: Record<string, Tool> = {
     description: 'List files in a directory. Default is workspace root.',
     execute: async (args, workspace) => {
       const dirPath = resolvePath(args.trim() || '.', workspace);
+      if (!dirPath.startsWith(workspace)) return `Error: Cannot list files outside workspace`;
       if (!fs.existsSync(dirPath)) return `Error: Directory not found: ${dirPath}`;
       try {
         const items = fs.readdirSync(dirPath, { withFileTypes: true });
@@ -127,11 +133,22 @@ export const tools: Record<string, Tool> = {
       const cmd = args.trim();
       if (!cmd) return 'Error: No command provided';
 
+      // Block shell chaining operators and newlines that bypass whitelist
+      if (/[;&|`\n\r]|\$\(/.test(cmd)) {
+        return `Error: Shell operators (;, &, |, \`, $(), newlines) are not allowed. Run one command at a time.`;
+      }
+
       // 白名单检查（取第一个单词）
       const cmdBase = path.basename(cmd.split(/\s+/)[0]);
       const allowed = EXEC_WHITELIST.some(w => cmdBase === w);
       if (!allowed) {
         return `Error: Command not in whitelist: "${cmdBase}"\nAllowed: ${EXEC_WHITELIST.join(', ')}`;
+      }
+
+      // Block dangerous flags that allow arbitrary code execution
+      const dangerousFlags = /\s-e\s|\s--eval[\s=]|\s-c\s/;
+      if (['node', 'python', 'python3'].includes(cmdBase) && dangerousFlags.test(` ${cmd} `)) {
+        return `Error: Inline code execution flags (-e, -c, --eval) are not allowed. Write code to a file first.`;
       }
 
       return new Promise((resolve) => {

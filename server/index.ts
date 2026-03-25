@@ -21,8 +21,8 @@ import tokensRouter from './routes/tokens.js';
 import projectsRouter from './routes/projects.js';
 import directChatRouter from './routes/direct-chat.js';
 
-// ── Restore queued tasks from disk on startup ─────────────────────────────────
-(async function restoreQueues() {
+(async function main() {
+  // ── Restore queued tasks from disk on startup ───────────────────────────────
   const saved = loadQueuedTasks();
   let restored = 0;
   for (const [agentName, tasks] of Object.entries(saved)) {
@@ -51,32 +51,44 @@ import directChatRouter from './routes/direct-chat.js';
       if (queue.length > 0) dequeueAgentTask(agentName);
     }
   } else clearQueuedTasks();
-})();
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+  const app = express();
+  app.use(cors());
+  app.use(express.json());
 
-app.use('/api', tasksRouter);
-app.use('/api', groupRouter);
-app.use('/api', groupsRouter);
-app.use('/api', agentsApiRouter);
-app.use('/api', statusRouter);
-app.use('/api', messagesRouter);
-app.use('/api', memoryRouter);
-app.use('/api', orchestrateRouter);
-app.use('/api', scratchpadRouter);
-app.use('/api', uploadRouter);
-app.use('/api', tokensRouter);
-app.use('/api/projects', projectsRouter);
-app.use('/api', directChatRouter);
+  app.use('/api', tasksRouter);
+  app.use('/api', groupRouter);
+  app.use('/api', groupsRouter);
+  app.use('/api', agentsApiRouter);
+  app.use('/api', statusRouter);
+  app.use('/api', messagesRouter);
+  app.use('/api', memoryRouter);
+  app.use('/api', orchestrateRouter);
+  app.use('/api', scratchpadRouter);
+  app.use('/api', uploadRouter);
+  app.use('/api', tokensRouter);
+  app.use('/api/projects', projectsRouter);
+  app.use('/api', directChatRouter);
 
-app.use('/uploads', express.static(UPLOADS_DIR));
-app.use(express.static(join(__dirname, '..', 'dist')));
-app.get('*', (_req, res) => {
-  res.sendFile(join(__dirname, '..', 'dist', 'index.html'));
-});
+  app.use('/uploads', express.static(UPLOADS_DIR));
 
-app.listen(PORT, () => {
-  console.log(`Agent Cube server running at http://localhost:${PORT}`);
-});
+  if (process.env.NODE_ENV !== 'production') {
+    // Dev mode: Vite as Express middleware (single port, HMR works)
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    // Production: serve pre-built static files
+    app.use(express.static(join(__dirname, '..', 'dist')));
+    app.get('*', (_req, res) => {
+      res.sendFile(join(__dirname, '..', 'dist', 'index.html'));
+    });
+  }
+
+  app.listen(PORT, () => {
+    console.log(`Agent Cube server running at http://localhost:${PORT}`);
+  });
+})().catch(console.error);

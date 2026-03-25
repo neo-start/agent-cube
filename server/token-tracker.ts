@@ -5,14 +5,24 @@ import type { TokenUsage, TokenRecord, AgentTokenStats } from './types.js';
 
 const TOKEN_USAGE_FILE = path.join(DATA_DIR, 'token-usage.jsonl');
 
-// Cost per million tokens (USD)
-const COST: Record<string, { input: number; output: number }> = {
+// Cost per million tokens (USD) — keyed by model prefix or provider fallback
+const MODEL_COST: Record<string, { input: number; output: number }> = {
+  'claude-opus':    { input: 15.0,  output: 75.0  },
+  'claude-sonnet':  { input: 3.0,   output: 15.0  },
+  'claude-haiku':   { input: 0.25,  output: 1.25  },
+  'deepseek-chat':  { input: 0.14,  output: 0.28  },
+  'deepseek-coder': { input: 0.14,  output: 0.28  },
+};
+
+const PROVIDER_COST: Record<string, { input: number; output: number }> = {
   claude:   { input: 3.0,   output: 15.0  },
   deepseek: { input: 0.14,  output: 0.28  },
 };
 
-function estimateCost(provider: string, inputTokens: number, outputTokens: number): number {
-  const rates = COST[provider] || COST['claude'];
+function estimateCost(provider: string, inputTokens: number, outputTokens: number, model = ''): number {
+  // Try model-specific rate first
+  const modelKey = Object.keys(MODEL_COST).find(k => model.startsWith(k));
+  const rates = modelKey ? MODEL_COST[modelKey] : (PROVIDER_COST[provider] || PROVIDER_COST['claude']);
   return (inputTokens / 1e6) * rates.input + (outputTokens / 1e6) * rates.output;
 }
 
@@ -58,14 +68,14 @@ export function getTokenSummary(): { all: Record<string, AgentTokenStats>; today
     all[agent].totalInput += r.inputTokens || 0;
     all[agent].totalOutput += r.outputTokens || 0;
     all[agent].totalCache += r.cacheTokens || 0;
-    all[agent].totalCost += estimateCost(provider, r.inputTokens || 0, r.outputTokens || 0);
+    all[agent].totalCost += estimateCost(provider, r.inputTokens || 0, r.outputTokens || 0, r.model || '');
 
     if (isToday) {
       if (!today[agent]) today[agent] = { totalInput: 0, totalOutput: 0, totalCache: 0, totalCost: 0, provider };
       today[agent].totalInput += r.inputTokens || 0;
       today[agent].totalOutput += r.outputTokens || 0;
       today[agent].totalCache += r.cacheTokens || 0;
-      today[agent].totalCost += estimateCost(provider, r.inputTokens || 0, r.outputTokens || 0);
+      today[agent].totalCost += estimateCost(provider, r.inputTokens || 0, r.outputTokens || 0, r.model || '');
     }
   }
 

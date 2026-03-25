@@ -10,6 +10,7 @@ export interface AgentState {
   latestLog: string | null;
   title: string | null;
   _startedAt: number | null;
+  _nudgedAt: number | null;
 }
 
 export interface Task {

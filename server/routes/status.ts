@@ -45,7 +45,13 @@ router.get('/status/stream', (req: Request, res: Response) => {
   );
   res.write(`data: ${payload}\n\n`);
 
+  // SSE keepalive — prevents proxies/load balancers from dropping idle connections
+  const keepalive = setInterval(() => {
+    try { res.write(`: keepalive\n\n`); } catch { clearInterval(keepalive); }
+  }, 30_000);
+
   req.on('close', () => {
+    clearInterval(keepalive);
     sseClients.delete(res);
   });
 });

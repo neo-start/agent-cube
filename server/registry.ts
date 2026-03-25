@@ -7,8 +7,8 @@ const AGENTS_FILE = path.join(DATA_DIR, 'agents.json');
 
 const DEFAULT_CONFIG: { agents: AgentConfig[] } = {
   agents: [
-    { name: 'Forge', provider: 'claude', model: 'claude-opus-4-5', apiKey: null },
-    { name: 'Sage', provider: 'deepseek', model: 'deepseek-chat', apiKey: null },
+    { name: 'Forge', provider: 'claude', model: 'claude-sonnet-4-6', apiKey: null },
+    { name: 'Arc', provider: 'claude', model: 'claude-sonnet-4-6', apiKey: null },
   ],
 };
 

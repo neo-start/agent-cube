@@ -29,7 +29,7 @@ function fmtCost(usd: number): string {
 
 const AGENT_COLORS: Record<string, string> = {
   Forge: '#4d9fff',
-  Sage: '#a78bfa',
+  Arc: '#34d399',
 };
 
 function Bar({ value, max, color }: { value: number; max: number; color: string }) {

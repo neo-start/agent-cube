@@ -9,7 +9,7 @@ export const __filename = fileURLToPath(import.meta.url);
 export const __dirname = dirname(__filename);
 
 export const PORT = process.env.PORT || 3020;
-export const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || 'sk-b24861db17d640bba4ffb816c8863f34';
+export const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || '';
 
 export const DATA_DIR = path.join(os.homedir(), '.agent-cube');
 export const MEMORY_DIR = path.join(DATA_DIR, 'memory');

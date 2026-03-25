@@ -28,14 +28,14 @@ const API = '';
 
 const AGENT_COLORS: Record<string, string> = {
   Forge: '#4d9fff',
-  Sage: '#a78bfa',
+  Arc: '#34d399',
   Orchestrator: '#f59e0b',
   User: '#22c55e',
 };
 
 const AGENT_LABELS: Record<string, string> = {
   Forge: 'Forge (Claude)',
-  Sage: 'Sage (DeepSeek)',
+  Arc: 'Arc (Claude)',
   Orchestrator: 'Orchestrator',
   User: 'You',
 };
@@ -190,6 +190,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
 
   useEffect(() => {
     if (!open) return;
+    setMessages([]);
     fetch(`${API}/api/groups/${groupId}/messages`)
       .then(r => r.json())
       .then(data => setMessages(data.messages || []))
@@ -200,7 +201,6 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
           .then(data => setMessages(data.messages || []))
           .catch(() => {});
       });
-    setMessages([]);
   }, [open, groupId]);
 
   useEffect(() => {
@@ -257,6 +257,15 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
             }
           }
           if (msg.type === 'status' && prev.some(m => m.id === msg.id)) return prev;
+          // Replace optimistic user message with server-confirmed one
+          if (msg.type === 'user' && msg.from === 'User') {
+            const optIdx = prev.findIndex(m => m.id.startsWith('optimistic-') && m.content === msg.content);
+            if (optIdx >= 0) {
+              const updated = [...prev];
+              updated[optIdx] = msg;
+              return updated;
+            }
+          }
           return [...prev, msg];
         });
       } catch {}
@@ -345,6 +354,17 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
     setMentionOpen(false);
     const sendFiles = files.length > 0 ? [...files] : undefined;
     setFiles([]);
+
+    // Optimistic update: show user message immediately without waiting for SSE
+    const optimisticMsg: GroupMessage = {
+      id: `optimistic-${Date.now()}`,
+      type: 'user',
+      from: 'User',
+      content: text,
+      timestamp: new Date().toISOString(),
+      attachments: sendFiles,
+    };
+    setMessages(prev => [...prev, optimisticMsg]);
 
     try {
       await fetch(`${API}/api/groups/${groupId}/send`, {
@@ -527,7 +547,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
       const agentCol = AGENT_COLORS[msg.from] || '#6b7280';
       const isExpanded = expandedTools.has(msg.id);
       return (
-        <div key={msg.id} style={{ display: 'flex', justifyContent: 'center', padding: '3px 0' }}>
+        <div key={msg.id} style={{ display: 'flex', justifyContent: 'flex-start', padding: '3px 0', paddingLeft: 36 }}>
           <button
             onClick={() => setExpandedTools(prev => {
               const next = new Set(prev);
@@ -562,7 +582,7 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
       const agentCol = AGENT_COLORS[msg.from] || '#6b7280';
       const isExpanded = expandedTools.has(msg.id + '-result');
       return (
-        <div key={msg.id} style={{ display: 'flex', justifyContent: 'center', padding: '3px 0' }}>
+        <div key={msg.id} style={{ display: 'flex', justifyContent: 'flex-start', padding: '3px 0', paddingLeft: 36 }}>
           <button
             onClick={() => setExpandedTools(prev => {
               const next = new Set(prev);
@@ -636,6 +656,31 @@ export function GroupChat({ isOpen, initialChannel, onToggle, groupId = 'default
           <div style={{ fontSize: 13, color: '#e5e7eb' }}>
             <MessageText text={msg.content || (isStreaming ? '...' : '')} />
           </div>
+
+          {/* Resume button for timed-out / error replies */}
+          {!isUser && msg.type === 'reply' && /timeout|timed.?out/i.test(msg.content) && msg.from !== 'User' && (
+            <button
+              onClick={() => {
+                const agent = msg.from;
+                fetch(`${API}/api/groups/${groupId}/send`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ text: `@${agent} Please continue the previous task from where you left off.`, target: agent }),
+                });
+              }}
+              style={{
+                marginTop: 8,
+                fontSize: 11, fontWeight: 600,
+                color: '#f59e0b',
+                background: 'rgba(245,158,11,0.1)',
+                border: '1px solid rgba(245,158,11,0.3)',
+                borderRadius: 6, padding: '3px 10px',
+                cursor: 'pointer',
+              }}
+            >
+              ↩ Resume
+            </button>
+          )}
 
           {/* Received attachments */}
           {msg.attachments && msg.attachments.length > 0 && (

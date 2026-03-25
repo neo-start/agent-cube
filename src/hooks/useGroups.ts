@@ -6,7 +6,7 @@ const API = '';
 const DEFAULT_GROUP: Group = {
   id: 'default',
   name: 'Default Group',
-  agents: ['Forge', 'Sage'],
+  agents: ['Forge', 'Arc'],
   createdAt: new Date().toISOString(),
 };
 

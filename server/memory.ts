@@ -265,11 +265,14 @@ function getDirectChatFile(agentName: string): string {
   return path.join(DIRECT_CHATS_DIR, `${agentName}.json`);
 }
 
+const DIRECT_CHAT_LIMIT = 200;
+
 export function loadDirectChat(agentName: string): unknown[] {
   try {
     const f = getDirectChatFile(agentName);
     if (!fs.existsSync(f)) return [];
-    return JSON.parse(fs.readFileSync(f, 'utf-8')) as unknown[];
+    const all = JSON.parse(fs.readFileSync(f, 'utf-8')) as unknown[];
+    return all.slice(-DIRECT_CHAT_LIMIT);
   } catch { return []; }
 }
 
