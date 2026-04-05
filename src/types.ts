@@ -1,3 +1,5 @@
+export type SceneType = 'office' | 'grassland';
+
 export type AgentStatus = 'idle' | 'pending' | 'working' | 'done' | 'blocked';
 
 export interface AgentData {

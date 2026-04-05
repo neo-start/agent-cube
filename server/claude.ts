@@ -17,7 +17,7 @@ function getClient(): Anthropic {
   return _client;
 }
 
-const DEFAULT_MODEL = process.env.CLAUDE_MODEL || 'claude-opus-4-6';
+const DEFAULT_MODEL = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
 const DEFAULT_MAX_TOKENS = 8192;
 
 interface ChatMessage {

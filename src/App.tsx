@@ -3,9 +3,11 @@ import { Scene } from './components/Scene';
 import { GroupChat } from './components/GroupChat';
 import { CreateGroupModal } from './components/CreateGroupModal';
 import { TokenDashboard } from './components/TokenDashboard';
+import { SceneSelector } from './components/SceneSelector';
 import { useTasks } from './hooks/useTasks';
 import { useGroups } from './hooks/useGroups';
 import { useAgentConfigs } from './hooks/useAgentConfigs';
+import type { SceneType } from './types';
 
 const STATUS_COLORS: Record<string, string> = {
   idle: '#6b7280',
@@ -34,6 +36,15 @@ export default function App() {
   const { groups, selectedGroupId, setSelectedGroupId, selectedGroup, createGroup } = useGroups();
   const [toast, setToast] = useState<{ text: string; color: string } | null>(null);
   const [darkMode, setDarkMode] = useState(true);
+  const [sceneType, setSceneType] = useState<SceneType>(() => {
+    const saved = localStorage.getItem('agent-cube-scene');
+    return (saved === 'office' ? 'office' : 'grassland') as SceneType;
+  });
+
+  const handleSceneChange = (scene: SceneType) => {
+    setSceneType(scene);
+    localStorage.setItem('agent-cube-scene', scene);
+  };
   const [groupChatOpen, setGroupChatOpen] = useState(false);
   const [groupChatChannel, setGroupChatChannel] = useState<string | null>(null);
   const [createGroupOpen, setCreateGroupOpen] = useState(false);
@@ -78,6 +89,7 @@ export default function App() {
           agents={agents}
           onAssignTask={undefined}
           darkMode={darkMode}
+          sceneType={sceneType}
           onDeskClick={(agentName: string) => {
             setGroupChatChannel(agentName);
             setGroupChatOpen(true);
@@ -182,12 +194,15 @@ export default function App() {
           </div>
         )}
 
-        {/* Token Dashboard — bottom-right floating panel */}
-        <div style={{ position: 'absolute', bottom: 20, right: 20, zIndex: 100, width: 260 }}>
-          <TokenDashboard
-            collapsed={tokenDashCollapsed}
-            onToggle={() => setTokenDashCollapsed(c => !c)}
-          />
+        {/* Bottom-right controls */}
+        <div style={{ position: 'absolute', bottom: 20, right: 20, zIndex: 100, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+          <div style={{ width: 260 }}>
+            <TokenDashboard
+              collapsed={tokenDashCollapsed}
+              onToggle={() => setTokenDashCollapsed(c => !c)}
+            />
+          </div>
+          <SceneSelector current={sceneType} onChange={handleSceneChange} />
         </div>
 
         {/* Bottom hint */}

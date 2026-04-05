@@ -300,6 +300,13 @@ export function checkDelegation(response: string, fromAgent: string, taskId: str
   const delegateDesc = match[2].trim() || originalDesc;
   if (toAgent === fromAgent) return false;
 
+  // Prevent infinite delegation chains
+  const depth = getTaskChainDepth(taskId);
+  if (depth >= MAX_MSG_CHAIN_DEPTH) {
+    console.warn(`[checkDelegation] Chain depth ${depth} >= ${MAX_MSG_CHAIN_DEPTH}, suppressing delegation from ${fromAgent} to ${toAgent}`);
+    return false;
+  }
+
   const parentTask = state.tasks[taskId];
   const isGroupOrigin = parentTask && (parentTask.source === 'group' || parentTask.source === 'orchestrate' || parentTask.source === 'delegate');
   const groupId = parentTask?.groupId || 'default';
@@ -328,6 +335,20 @@ export function checkDelegation(response: string, fromAgent: string, taskId: str
   return true;
 }
 
+// Walk up the parentTaskId chain and return the depth (0 = root task).
+function getTaskChainDepth(taskId: string): number {
+  let depth = 0;
+  let current = state.tasks[taskId];
+  while (current?.parentTaskId) {
+    depth++;
+    current = state.tasks[current.parentTaskId];
+    if (depth > 20) break; // safety: avoid infinite walk on corrupted chains
+  }
+  return depth;
+}
+
+const MAX_MSG_CHAIN_DEPTH = 3; // max [MSG:X] → subtask chain depth to prevent A→B→A→B loops
+
 // Scan response for [MSG:Target] blocks, route each through group chat.
 // Returns true if any MSG blocks were found and processed.
 export function checkGroupMessages(response: string, fromAgent: string, taskId: string): boolean {
@@ -336,6 +357,23 @@ export function checkGroupMessages(response: string, fromAgent: string, taskId: 
   const pattern = new RegExp(`\\[MSG:(${namePattern}|User)\\]([\\s\\S]*?)(?=\\[MSG:|$)`, 'g');
   let found = false;
   let match;
+
+  // Check chain depth to prevent infinite MSG ping-pong loops
+  const depth = getTaskChainDepth(taskId);
+  if (depth >= MAX_MSG_CHAIN_DEPTH) {
+    console.warn(`[checkGroupMessages] Chain depth ${depth} >= ${MAX_MSG_CHAIN_DEPTH}, suppressing subtask creation for task ${taskId} (agent: ${fromAgent})`);
+    // Still post messages to group chat, but don't create new subtasks
+    while ((match = pattern.exec(response)) !== null) {
+      const toTarget = match[1];
+      const msgContent = match[2].trim();
+      if (!msgContent) continue;
+      found = true;
+      const parentTask = state.tasks[taskId];
+      const groupId = parentTask?.groupId || 'default';
+      pushGroupMsg('agent-msg', fromAgent, msgContent, { toTarget, taskId, groupId });
+    }
+    return found;
+  }
 
   while ((match = pattern.exec(response)) !== null) {
     const toTarget = match[1];
@@ -387,8 +425,9 @@ You are in a multi-agent group discussion. At the very end of your response, on 
 Rules:
 - Always end with exactly one of these directives
 - You can invite an agent not yet in the conversation — they'll join automatically
-- If you omit the directive, the system will automatically pass the turn to the other agent
+- If you omit the directive, the conversation will pause and wait for user input
 - Keep responses focused; don't repeat what others already said
+- If a task is already completed or there's nothing left to do, use [DONE] to end the discussion
 `;
 
 interface NextDirective {
@@ -397,8 +436,7 @@ interface NextDirective {
 }
 
 // Parse [NEXT:X] or [DONE] from the tail of a response.
-// If no directive found, default to the other participant in the thread
-// rather than pausing — prevents conversation from breaking when agent forgets.
+// If no directive found, pause and return control to the user.
 function parseNextDirective(text: string, thread: Thread, currentAgent: string): NextDirective {
   const tail = text.slice(-300);
   if (/\[DONE\]/i.test(tail)) return { type: 'done' };
@@ -407,12 +445,13 @@ function parseNextDirective(text: string, thread: Thread, currentAgent: string):
     const targets = m[1].split(',').map((s: string) => s.trim()).filter(Boolean);
     return { type: 'next', targets };
   }
-  // No directive found — auto-pass to another participant if available
-  if (thread && thread.participants.length >= 2) {
-    const other = thread.participants.find(p => p !== currentAgent);
-    if (other) return { type: 'next', targets: [other] };
+  // Treat very short / empty / refusal responses as "done" — agent has nothing to contribute
+  const trimmed = text.trim();
+  if (trimmed.length < 30 || /^no response (requested|needed)/i.test(trimmed)) {
+    return { type: 'done' };
   }
-  return { type: 'user' }; // only pause if single-agent thread
+  // No directive found — pause and let the user (or orchestrator) decide.
+  return { type: 'user' };
 }
 
 // Save thread summary to each participant's long-term memory
@@ -485,6 +524,37 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
   if (!thread || thread.status !== 'active') return;
 
   const threadGroupId = thread.groupId || 'default';
+
+  // ── Loop detection ──
+  // 1. Same agent sent 3+ near-identical messages
+  const LOOP_THRESHOLD = 3;
+  const recentFromSame = thread.messages.filter(m => m.from === agentName).slice(-LOOP_THRESHOLD);
+  let loopDetected = false;
+  if (recentFromSame.length >= LOOP_THRESHOLD) {
+    const snippets = recentFromSame.map(m => m.content.slice(0, 200));
+    if (snippets.every(s => s === snippets[0])) loopDetected = true;
+  }
+  // 2. Ping-pong: two agents passing turns back and forth without progress
+  //    If the thread has 8+ messages and the last 4 all contain [NEXT:...], it's a loop
+  if (!loopDetected && thread.messages.length >= 8) {
+    const last6 = thread.messages.slice(-6);
+    const nextCount = last6.filter(m => /\[NEXT:[^\]]+\]/i.test(m.content.slice(-300))).length;
+    if (nextCount >= 5) loopDetected = true;
+  }
+  // 3. Hard cap: if total messages exceed 2x maxTurns, force-end
+  if (!loopDetected && thread.messages.length >= thread.maxTurns * 2) {
+    loopDetected = true;
+  }
+  if (loopDetected) {
+    console.warn(`[thread] Loop detected in thread ${threadId} (${thread.messages.length} msgs). Force-ending.`);
+    thread.status = 'done';
+    thread.endedAt = new Date().toISOString();
+    thread.endReason = 'loop-detected';
+    saveThread(thread);
+    saveThreadToAgentMemory(thread);
+    pushGroupMsg('thread-end', agentName, `Loop detected — thread auto-ended`, { threadId, endReason: 'loop-detected', groupId: threadGroupId });
+    return;
+  }
 
   // Dynamically add agent if not yet in participants
   if (!thread.participants.includes(agentName)) {
@@ -639,6 +709,11 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
     saveThread(thread);
 
     // Parse [NEXT] and dispatch
+    // Re-check thread status — it may have been manually stopped during agent execution
+    if (thread.status !== 'active') {
+      console.log(`[thread] Thread ${threadId} is no longer active (${thread.status}), skipping dispatch.`);
+      return;
+    }
     const directive = parseNextDirective(result, thread, agentName);
 
     if (directive.type === 'done' || thread.messages.length >= thread.maxTurns) {
@@ -685,6 +760,25 @@ export async function runAgentInThread(agentName: string, threadId: string): Pro
 export function resumeThread(threadId: string, userMessage: string, nextAgent?: string): boolean {
   const thread = state.threads[threadId];
   if (!thread) return false;
+
+  // Detect repeated resume with similar content (prevents auto-resume loops)
+  const recentUserMsgs = thread.messages.filter(m => m.from === 'User').slice(-3);
+  const isDuplicate = recentUserMsgs.some(m => {
+    // Normalize whitespace and compare
+    const prev = m.content.replace(/\s+/g, ' ').trim().slice(0, 200);
+    const curr = userMessage.replace(/\s+/g, ' ').trim().slice(0, 200);
+    return prev === curr;
+  });
+  if (isDuplicate) {
+    console.warn(`[resumeThread] Duplicate resume detected for thread ${threadId}, ending thread to prevent loop`);
+    thread.status = 'done';
+    thread.endedAt = new Date().toISOString();
+    thread.endReason = 'duplicate-resume';
+    saveThread(thread);
+    broadcast();
+    return false;
+  }
+
   thread.messages.push({ from: 'User', content: userMessage, timestamp: new Date().toISOString() });
   thread.status = 'active';
   runAgentInThread(nextAgent || thread.participants[0], threadId).catch((err) => {

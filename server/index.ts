@@ -30,6 +30,11 @@ import directChatRouter from './routes/direct-chat.js';
     for (const meta of tasks) {
       const m = meta as { taskId?: string; description?: string; agent?: string; createdAt?: string } | null;
       if (!m?.taskId || !m?.description || !m?.agent) continue;
+      // Discard stale queued tasks older than 1 hour to prevent infinite replay loops
+      if (m.createdAt && Date.now() - new Date(m.createdAt).getTime() > 60 * 60 * 1000) {
+        console.log(`[startup] Discarding stale queued task ${m.taskId} (created ${m.createdAt})`);
+        continue;
+      }
       if (!state.tasks[m.taskId]) {
         state.tasks[m.taskId] = {
           id: m.taskId, agent: m.agent, description: m.description,
